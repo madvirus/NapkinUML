@@ -10,13 +10,26 @@ on:
     tags: ["v*"]
 
 jobs:
+  # Dependencies may only use the licenses allowed in deny.toml.
+  licenses:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          command: check licenses
+
   windows:
+    needs: licenses
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: x86_64-pc-windows-msvc,aarch64-pc-windows-msvc
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-about
       - name: Build
         shell: cmd
         run: build-windows.cmd
@@ -27,14 +40,19 @@ jobs:
           path: |
             dist/NapkinUML-x64.exe
             dist/NapkinUML-arm64.exe
+            dist/THIRD-PARTY-LICENSES.html
 
   macos:
+    needs: licenses
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: aarch64-apple-darwin,x86_64-apple-darwin
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-about
       - name: Build
         run: sh build-macos.sh
       - uses: actions/upload-artifact@v7

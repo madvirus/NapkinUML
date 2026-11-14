@@ -8,4 +8,11 @@ cargo build --release --target aarch64-pc-windows-msvc || exit /b 1
 if not exist dist mkdir dist
 copy /y target\x86_64-pc-windows-msvc\release\NapkinUML.exe dist\NapkinUML-x64.exe >nul
 copy /y target\aarch64-pc-windows-msvc\release\NapkinUML.exe dist\NapkinUML-arm64.exe >nul
+rem Open source notices (needs cargo-about: cargo install --locked cargo-about)
+cargo about --version >nul 2>&1
+if errorlevel 1 (
+  echo cargo-about not found: skipped dist\THIRD-PARTY-LICENSES.html
+) else (
+  cargo about generate --fail about.hbs -o dist\THIRD-PARTY-LICENSES.html || exit /b 1
+)
 echo Built dist\NapkinUML-x64.exe and dist\NapkinUML-arm64.exe

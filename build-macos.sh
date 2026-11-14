@@ -19,6 +19,14 @@ lipo -create -output "$APP/Contents/MacOS/NapkinUML" \
   target/aarch64-apple-darwin/release/NapkinUML \
   target/x86_64-apple-darwin/release/NapkinUML
 cp icons/napkin-uml.icns "$APP/Contents/Resources/napkin-uml.icns"
+cp LICENSE-MIT LICENSE-APACHE "$APP/Contents/Resources/"
+# Open source notices (needs cargo-about: cargo install --locked cargo-about)
+if cargo about --version >/dev/null 2>&1; then
+  cargo about generate --fail about.hbs -o dist/THIRD-PARTY-LICENSES.html
+  cp dist/THIRD-PARTY-LICENSES.html "$APP/Contents/Resources/"
+else
+  echo "cargo-about not found: skipped THIRD-PARTY-LICENSES.html"
+fi
 cat > "$APP/Contents/Info.plist" <<EOF
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">

@@ -1,8 +1,10 @@
 [package]
 name = "napkin-uml"
-version = "0.1.0"
+version = "0.1.1-SNAPSHOT"
 edition = "2021"
 description = "A simple UML diagram editor"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/madvirus/NapkinUML"
 
 [[bin]]
 name = "NapkinUML"

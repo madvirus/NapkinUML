@@ -28,5 +28,19 @@ UML 9종:
 
 ![AI assistance](docs/napkin-ai-assistance.png)
 
+AI 에이전트(Claude Code, Codex CLI, Gemini CLI, Ollama 등)는 NapkinUML에 포함되어 있지 않습니다. 사용자가 직접 설치한 프로그램을 실행하며, 각 프로그램의 라이선스와 이용 약관을 따릅니다.
 
+## 라이선스
 
+NapkinUML의 소스 코드는 다음 두 라이선스 중 하나를 선택해 사용할 수 있습니다.
+
+* [Apache License 2.0](LICENSE-APACHE)
+* [MIT License](LICENSE-MIT)
+
+NapkinUML 이름, 로고와 아이콘(`icons/`, `docs/`의 이미지)은 위 라이선스에 포함되지 않습니다. 수정한 버전을 배포할 때는 다른 이름과 아이콘을 사용해 주세요.
+
+### 서드파티 오픈소스
+
+NapkinUML은 egui, winit, serde, image, rfd 등 오픈소스 Rust 크레이트를 사용하며, 배포 파일에는 egui에 내장된 폰트(Hack, Ubuntu, Noto Emoji 등, SIL OFL 1.1 및 Ubuntu Font Licence)가 포함됩니다. 의존성 목록과 라이선스 전문은 릴리즈에 함께 올라가는 `THIRD-PARTY-LICENSES.html`(macOS 앱은 `NapkinUML.app/Contents/Resources/` 안)에서 확인할 수 있습니다.
+
+새 의존성은 허용 라이선스(MIT, Apache-2.0, BSD, ISC, Zlib 등 비 카피레프트)만 사용할 수 있으며, `deny.toml`에 정의된 정책을 CI에서 `cargo deny check licenses`로 검사합니다.
