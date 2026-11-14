@@ -30,6 +30,36 @@ UML 9종:
 
 AI 에이전트(Claude Code, Codex CLI, Gemini CLI, Ollama 등)는 NapkinUML에 포함되어 있지 않습니다. 사용자가 직접 설치한 프로그램을 실행하며, 각 프로그램의 라이선스와 이용 약관을 따릅니다.
 
+## 설치
+
+[GitHub Releases](https://github.com/madvirus/NapkinUML)에서 운영체제에 맞는 파일을 내려받습니다. 별도 설치 과정 없이 바로 실행할 수 있습니다.
+
+| 운영체제 | 파일 |
+|---|---|
+| Windows (x64) | `NapkinUML-x64.exe` |
+| Windows (ARM64) | `NapkinUML-arm64.exe` |
+| macOS (Apple Silicon / Intel) | `NapkinUML-macos.dmg` 또는 `NapkinUML-macos.zip` |
+
+### 보안 경고 안내
+
+NapkinUML은 개인 용도로 만든 프로그램이라 코드 서명 인증서로 서명하지 않았습니다. 그래서 다운로드하거나 처음 실행할 때 경고가 표시될 수 있습니다. 소스 코드는 이 저장소에 공개되어 있고, 배포 파일은 GitHub Actions(`.github/workflows/build.yml`)에서 빌드됩니다. 원하면 직접 빌드해서 사용해도 됩니다.
+
+**Windows**
+
+* 브라우저(Edge, Chrome 등)에서 "일반적으로 다운로드되지 않는 파일" 같은 경고가 뜨면 `...` 메뉴에서 **유지**(또는 **계속**)를 선택합니다.
+* 실행할 때 "Windows의 PC 보호"(SmartScreen) 창이 뜨면 **추가 정보** → **실행**을 누릅니다.
+
+**macOS**
+
+* `.dmg`를 열고 NapkinUML 앱을 Applications 폴더로 드래그해서 복사합니다(`.zip`은 압축을 풀어 옮깁니다).
+* 앱은 ad-hoc 서명만 되어 있어서 처음 실행할 때 "확인되지 않은 개발자" 또는 "열 수 없습니다" 경고가 뜹니다.
+* macOS 14 이하: Finder에서 앱을 **우클릭(Control+클릭) → 열기**를 선택한 뒤 다시 **열기**를 누릅니다.
+* macOS 15 이상: 앱 실행을 한 번 시도한 뒤 **시스템 설정 → 개인정보 보호 및 보안**에서 **그래도 열기**를 누릅니다.
+* 또는 터미널에서 격리 속성을 제거해도 됩니다.
+  ```sh
+  xattr -dr com.apple.quarantine /Applications/NapkinUML.app
+  ```
+
 ## 라이선스
 
 NapkinUML의 소스 코드는 다음 두 라이선스 중 하나를 선택해 사용할 수 있습니다.
