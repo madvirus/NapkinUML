@@ -13,16 +13,17 @@ jobs:
   windows:
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: x86_64-pc-windows-msvc,aarch64-pc-windows-msvc
       - name: Build
         shell: cmd
         run: build-windows.cmd
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: NapkinUML-windows
+          if-no-files-found: error
           path: |
             dist/NapkinUML-x64.exe
             dist/NapkinUML-arm64.exe
@@ -30,15 +31,40 @@ jobs:
   macos:
     runs-on: macos-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: aarch64-apple-darwin,x86_64-apple-darwin
       - name: Build
         run: sh build-macos.sh
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: NapkinUML-macos
+          if-no-files-found: error
           path: |
             dist/NapkinUML-macos.dmg
             dist/NapkinUML-macos.zip
+
+  # On a "v*" tag push, publish both builds as a GitHub Release (skipped for manual runs).
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [windows, macos]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      actions: read
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+    steps:
+      - name: Download build artifacts
+        run: gh run download "${{ github.run_id }}" --dir artifacts
+      - name: Create or update release
+        run: |
+          tag="${GITHUB_REF_NAME}"
+          files=$(find artifacts -type f)
+          if gh release view "$tag" >/dev/null 2>&1; then
+            gh release upload "$tag" $files --clobber
+          else
+            gh release create "$tag" $files --title "NapkinUML $tag" --notes ""
+          fi
