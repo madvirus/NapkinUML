@@ -1,0 +1,44 @@
+# Builds NapkinUML for Windows (x64, ARM64) and macOS (one app for Apple Silicon and Intel)
+# on GitHub's own Windows and Mac machines. Put the app/ folder in a GitHub repository (as
+# its top folder), then run this from the repository's Actions tab ("Run workflow") or by
+# pushing; the programs appear as downloadable artifacts of the run.
+name: build
+
+on:
+  workflow_dispatch:
+  push:
+    tags: ["v*"]
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc,aarch64-pc-windows-msvc
+      - name: Build
+        shell: cmd
+        run: build-windows.cmd
+      - uses: actions/upload-artifact@v4
+        with:
+          name: NapkinUML-windows
+          path: |
+            dist/NapkinUML-x64.exe
+            dist/NapkinUML-arm64.exe
+
+  macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin,x86_64-apple-darwin
+      - name: Build
+        run: sh build-macos.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: NapkinUML-macos
+          path: |
+            dist/NapkinUML-macos.dmg
+            dist/NapkinUML-macos.zip

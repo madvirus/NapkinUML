@@ -1,0 +1,336 @@
+//! English / Korean user interface text. Code is written with English text;
+//! `tr` returns the Korean text when the language is Korean and a translation exists.
+
+use serde::{Deserialize, Serialize};
+
+#[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Language {
+    /// Follow the operating system's display language (English when it is neither English nor Korean).
+    System,
+    English,
+    Korean,
+}
+
+impl Language {
+    /// The language actually shown: OS Default becomes English or Korean.
+    pub fn resolved(self) -> Language {
+        match self {
+            Language::System => os_language(),
+            l => l,
+        }
+    }
+}
+
+/// The operating system's display language, read once: Korean when it is Korean, otherwise English
+/// (only English and Korean are translated).
+pub fn os_language() -> Language {
+    static OS: std::sync::OnceLock<Language> = std::sync::OnceLock::new();
+    *OS.get_or_init(|| if os_is_korean() { Language::Korean } else { Language::English })
+}
+
+#[cfg(target_os = "windows")]
+fn os_is_korean() -> bool {
+    #[link(name = "kernel32")]
+    extern "system" {
+        fn GetUserDefaultUILanguage() -> u16;
+    }
+    // LANGID: the low 10 bits are the primary language; LANG_KOREAN = 0x12
+    let id = unsafe { GetUserDefaultUILanguage() };
+    id & 0x3ff == 0x12
+}
+
+#[cfg(target_os = "macos")]
+fn os_is_korean() -> bool {
+    // the first preferred language, e.g. ("ko-KR", "en-US")
+    let out = std::process::Command::new("defaults").args(["read", "-g", "AppleLanguages"]).output();
+    if let Ok(o) = out {
+        let text = String::from_utf8_lossy(&o.stdout);
+        if let Some(first) = text.split(|c: char| c == '"' ).nth(1) {
+            return first.starts_with("ko");
+        }
+    }
+    env_is_korean()
+}
+
+#[cfg(not(any(target_os = "windows", target_os = "macos")))]
+fn os_is_korean() -> bool {
+    env_is_korean()
+}
+
+#[allow(dead_code)]
+fn env_is_korean() -> bool {
+    ["LC_ALL", "LC_MESSAGES", "LANG"].iter().filter_map(|k| std::env::var(k).ok()).find(|v| !v.is_empty()).map(|v| v.starts_with("ko")).unwrap_or(false)
+}
+
+pub fn tr(lang: Language, s: &str) -> &str {
+    if lang.resolved() == Language::English {
+        return s;
+    }
+    korean(s).unwrap_or(s)
+}
+
+fn korean(s: &str) -> Option<&'static str> {
+    Some(match s {
+        // menus
+        "Project" => "프로젝트",
+        "Diagram" => "다이어그램",
+        "View" => "뷰",
+        "Window" => "윈도우",
+        "New" => "새로 만들기",
+        "New Project" => "새 프로젝트",
+        "Open..." => "열기...",
+        "Open Project" => "프로젝트 열기",
+        "Recent Projects" => "최근 프로젝트",
+        "Save" => "저장",
+        "Save as..." => "다른 이름으로 저장...",
+        "Save Project" => "프로젝트 저장",
+        "Export" => "내보내기",
+        "Active Diagram as Image (PNG)..." => "이미지로 액티브 다이어그램 (PNG)...",
+        "Project Properties..." => "프로젝트 프로퍼티...",
+        "Close Project" => "프로젝트 닫기",
+        "Exit" => "나가기",
+        "New Diagram..." => "새 다이어그램...",
+        "Undo" => "실행 취소",
+        "Redo" => "다시 실행",
+        "Cut" => "잘라내기",
+        "Copy" => "복사",
+        "Paste" => "붙여넣기",
+        "Duplicate" => "복제",
+        "Delete" => "삭제",
+        "Select All" => "모두 선택",
+        "Select All of Same Type" => "동일 타입 모두 선택",
+        "Select Inverse" => "반전 선택",
+        "Align Shapes" => "형태 정렬",
+        "By Left Edges" => "왼쪽 가장자리에 맞춰",
+        "By Right Edges" => "오른쪽 가장자리에 맞춰",
+        "By Top Edges" => "위쪽 가장자리에 맞춰",
+        "By Bottom Edges" => "아래 가장자리에 맞춰",
+        "By Horizontal Centers" => "수직중앙에 맞춰",
+        "By Vertical Centers" => "수평중앙에 맞춰",
+        "Same Size" => "동일 크기",
+        "Same Width" => "동일 너비",
+        "Same Height" => "동일 높이",
+        "Same Width and Height" => "동일 너비 및 높이",
+        "Rename Diagram..." => "다이어그램 이름 변경...",
+        "Delete Diagram" => "다이어그램 삭제",
+        "Duplicate Diagram" => "다이어그램 복제",
+        "Close Active Diagram" => "액티브 다이어그램 닫기",
+        "Close All Diagrams" => "모든 다이어그램 닫기",
+        "Zoom In" => "줌인",
+        "Zoom Out" => "줌아웃",
+        "Zoom 100% (Actual Size)" => "확대 100% (실제크기)",
+        "Fit to Window" => "창에 맞추기",
+        "Grid" => "격자",
+        "Show Grid" => "격자 보이기",
+        "Snap to Grid" => "격자에 스냅",
+        "Panes" => "구획",
+        "Diagram Navigator" => "다이어그램 네비게이터",
+        "Model Explorer" => "모델 탐색기",
+        "Property" => "프로퍼티",
+        "Toolbar" => "도구 모음",
+        "Diagram Toolbar" => "다이어그램 도구 모음",
+        "Full Screen" => "전체 화면",
+        "New Window" => "새 윈도우",
+        "Window Switcher" => "윈도우 전환기",
+        "Application Options..." => "애플리케이션 옵션...",
+        "Project Options..." => "프로젝트 옵션...",
+        "Application Options" => "애플리케이션 옵션",
+        "Project Options" => "프로젝트 옵션",
+        // dialogs
+        "OK" => "확인",
+        "Cancel" => "취소",
+        "Apply" => "적용",
+        "Close" => "닫기",
+        "Yes" => "예",
+        "No" => "아니오",
+        "Name" => "이름",
+        "Author" => "작성자",
+        "Description" => "설명",
+        "Documentation" => "문서",
+        "Stereotype" => "스테레오타입",
+        "Attributes" => "속성",
+        "Operations" => "오퍼레이션",
+        "Literals" => "리터럴",
+        "Slots" => "슬롯",
+        "Columns" => "컬럼",
+        "Activities" => "액티비티",
+        "Fill color" => "채우기 색",
+        "Default" => "디폴트",
+        "Type" => "타입",
+        "Source" => "소스",
+        "Target" => "타깃",
+        "Source label" => "소스 레이블",
+        "Target label" => "타깃 레이블",
+        "Reverse Direction" => "방향 바꾸기",
+        "General" => "일반",
+        "Diagramming" => "다이어그래밍",
+        "Appearance" => "모양",
+        "Language" => "언어",
+        "Theme" => "테마",
+        "Light" => "밝게",
+        "Dark" => "어둡게",
+        "Grid size" => "격자 크기",
+        "Show grid in new diagrams" => "새 다이어그램에 격자 보이기",
+        "Snap shapes to grid" => "형태를 격자에 스냅",
+        "Shape text size" => "형태 글자 크기",
+        "Confirm before deleting diagrams" => "다이어그램 삭제 전 확인",
+        "Show labels in diagram toolbar" => "다이어그램 도구 모음에 이름 보이기",
+        "Recent projects to remember" => "기억할 최근 프로젝트 수",
+        "Show attributes" => "속성 보이기",
+        "Show operations" => "오퍼레이션 보이기",
+        "Show stereotypes" => "스테레오타입 보이기",
+        "Show multiplicity" => "다중성 보이기",
+        "Number sequence messages" => "시퀀스 메시지 번호 매기기",
+        "ERD notation" => "ERD 표기법",
+        "Crow's Foot" => "까마귀 발",
+        "Multiplicity (1, *)" => "다중성 (1, *)",
+        "Default attribute visibility" => "속성 디폴트 가시성",
+        "Grow shapes to fit their text" => "글자에 맞게 형태 늘리기",
+        "Class" => "클래스",
+        "Sequence" => "시퀀스",
+        "Select" => "선택",
+        "Save changes to the project?" => "프로젝트 변경 사항을 저장할까요?",
+        "Delete this diagram?" => "이 다이어그램을 삭제할까요?",
+        "No diagram is open." => "열린 다이어그램이 없습니다.",
+        "Create a diagram from the Diagram menu or the Diagram Navigator." => "다이어그램 메뉴나 다이어그램 네비게이터에서 다이어그램을 만드세요.",
+        "Open diagrams" => "열린 다이어그램",
+        "All diagrams" => "모든 다이어그램",
+        "Use Up/Down or Tab, then Enter." => "위/아래 또는 Tab, 그리고 Enter.",
+        "Diagram type" => "다이어그램 타입",
+        "Diagram name" => "다이어그램 이름",
+        "Add Attribute" => "속성 추가",
+        "Add Operation" => "오퍼레이션 추가",
+        "Add Column" => "컬럼 추가",
+        "Add Literal" => "리터럴 추가",
+        "Add Slot" => "슬롯 추가",
+        "Rename" => "이름 변경",
+        "Open" => "열기",
+        "Bring to Front" => "맨 앞으로",
+        "Send to Back" => "맨 뒤로",
+        "elements" => "요소",
+        "connectors" => "커넥터",
+        "One item per line." => "한 줄에 하나씩.",
+        "Start a line with PK for a primary key." => "기본 키는 줄을 PK로 시작하세요.",
+        "UML Diagrams" => "UML 다이어그램",
+        "Database Modeling" => "데이터베이스 모델링",
+        // diagram kinds
+        "Class Diagram" => "클래스 다이어그램",
+        "Component Diagram" => "컴포넌트 다이어그램",
+        "Deployment Diagram" => "배치 다이어그램",
+        "Use Case Diagram" => "Use Case 다이어그램",
+        "Sequence Diagram" => "시퀀스 다이어그램",
+        "State Machine Diagram" => "스테이트 머신 다이어그램",
+        "Activity Diagram" => "액티비티 다이어그램",
+        "Object Diagram" => "오브젝트 다이어그램",
+        "Package Diagram" => "패키지 다이어그램",
+        "Entity Relationship Diagram" => "엔티티 관계 다이어그램",
+        "Font" => "폰트",
+        "Text size" => "글자 크기",
+        "Diagram font" => "다이어그램 폰트",
+        "(Default)" => "(디폴트)",
+        "Arrow at target end" => "타깃 쪽 화살표",
+        "Arrow at source end" => "소스 쪽 화살표",
+        "Straight Line" => "직선",
+        "Right-Angle Line" => "꺾인 선(직각)",
+        "Opening" => "열린 방향",
+        "Right" => "오른쪽",
+        "Down" => "아래",
+        "Left" => "왼쪽",
+        "Up" => "위",
+        "Drag the dots on the selected line to bend it; double-click a square to remove a bend." => "선택한 선의 점을 끌면 꺾이고, 네모 점을 더블클릭하면 꺾임이 없어집니다.",
+        "Provided Interface" => "제공 인터페이스",
+        "Required Interface" => "요구 인터페이스",
+        "Connector Style" => "커넥터 스타일",
+        "Default connector style" => "디폴트 커넥터 스타일",
+        "Follow diagram" => "다이어그램 따름",
+        "Rectilinear" => "직각",
+        "Oblique" => "사선",
+        "Curve" => "곡선",
+        "Round rectilinear" => "둥근 직각",
+        "Round oblique" => "둥근 사선",
+        "Source navigable" => "소스 탐색 가능",
+        "Target navigable" => "타깃 탐색 가능",
+        "True" => "예",
+        "False" => "아니오",
+        "Unspecified" => "지정 안 함",
+        "An arrow shows at a navigable end when the other end is not navigable." => "한쪽 끝만 탐색 가능하면 그쪽에 화살표가 표시됩니다.",
+        "Sequence number format" => "시퀀스 번호 형식",
+        "Single level (1, 2, 3)" => "단일 수준 (1, 2, 3)",
+        "Nested level (1, 1.1, 1.2, 1.2.1)" => "중첩 수준 (1, 1.1, 1.2, 1.2.1)",
+        "Show activations" => "활성화(Activation) 표시",
+        "Sequence Numbering" => "시퀀스 번호",
+        "Diagram background" => "다이어그램 배경색",
+        "Shape fill" => "도형 채우기 색",
+        "Text color" => "글자색",
+        "Use original blue" => "원본 하늘색 사용",
+        "Sequence number handling" => "시퀀스 번호 처리",
+        "Automatic" => "자동",
+        "Manual" => "수동",
+        "Sequence number" => "시퀀스 번호",
+        "Auto extend activations" => "활성화 자동 연장",
+        "Folders" => "폴더",
+        "Diagram Types" => "다이어그램 종류",
+        "New Folder" => "새 폴더",
+        "New Diagram" => "새 다이어그램",
+        "Rename Folder" => "폴더 이름 변경",
+        "Delete Folder" => "폴더 삭제",
+        "Move to Folder" => "폴더로 이동",
+        "(Project root)" => "(프로젝트 루트)",
+        "Folder" => "폴더",
+        "Folders can be at most 3 levels deep." => "폴더는 최대 3단계까지만 만들 수 있습니다.",
+        "Pastel colors" => "파스텔 색상",
+        "Pink" => "핑크",
+        "Coral" => "코랄",
+        "Peach" => "피치",
+        "Butter" => "버터",
+        "Lime" => "라임",
+        "Mint" => "민트",
+        "Aqua" => "아쿠아",
+        "Sky" => "스카이",
+        "Periwinkle" => "페리윙클",
+        "Lavender" => "라벤더",
+        "Lilac" => "라일락",
+        "Sand" => "샌드",
+        "Apricot" => "살구",
+        "Teal" => "틸",
+        "Powder Blue" => "파우더 블루",
+        "Rose" => "로즈",
+        "Stone" => "스톤",
+        "Silver" => "실버",
+        "Component icon" => "컴포넌트 아이콘",
+        "Hide" => "감추기",
+        "Reset Name Position" => "이름 위치 초기화",
+        "Open Example Project" => "예제 프로젝트 열기",
+        "Text" => "텍스트",
+        "Alignment" => "정렬",
+        "Network Diagram" => "네트워크 다이어그램",
+        "Network" => "네트워크",
+        "Show/Hide Diagram Navigator and Model Explorer" => "다이어그램 네비게이터/모델 탐색기 보이기/감추기",
+        "Hide this pane" => "이 창 감추기",
+        "Show Diagram Navigator and Model Explorer" => "다이어그램 네비게이터/모델 탐색기 보이기",
+        "AI Assistant" => "AI 어시스턴트",
+        "Draw or change diagrams by talking to an AI agent installed on this computer" => "이 컴퓨터에 설치된 AI 에이전트와 대화해서 다이어그램을 그리거나 수정합니다",
+        "No AI agent is set. Install Claude Code, Codex CLI, Gemini CLI or Ollama, or set a custom command." => "AI 에이전트가 설정되지 않았습니다. Claude Code, Codex CLI, Gemini CLI, Ollama 중 하나를 설치하거나 사용자 명령을 지정하세요.",
+        "The diagram was updated." => "다이어그램을 수정했습니다.",
+        "Clear" => "지우기",
+        "Custom command" => "사용자 명령",
+        "Agent" => "에이전트",
+        "Look for installed agents again" => "설치된 에이전트 다시 찾기",
+        "Command" => "명령",
+        "The request is sent to the command's input; its output is the answer." => "요청은 명령의 표준 입력으로 보내고, 출력을 답으로 사용합니다.",
+        "Model" => "모델",
+        "first installed" => "처음 설치된 모델",
+        "No AI agent was found on this computer. Install Claude Code, Codex CLI, Gemini CLI or Ollama, or set a custom command." => "이 컴퓨터에서 AI 에이전트를 찾지 못했습니다. Claude Code, Codex CLI, Gemini CLI, Ollama 중 하나를 설치하거나 사용자 명령을 지정하세요.",
+        "Working..." => "작업 중...",
+        "Stop" => "중지",
+        "e.g. Draw a class diagram of a library: Book, Member, Loan" => "예: 도서관 클래스 다이어그램을 그려줘 (Book, Member, Loan)",
+        "Send" => "보내기",
+        "Ctrl+Enter sends · Undo takes a change back" => "Ctrl+Enter로 보내기 · 실행 취소로 되돌리기",
+        "Ask the AI agent to draw a new diagram or to change the open one, in your own words. It sees the open diagram." => "새 다이어그램을 그리거나 열린 다이어그램을 고쳐 달라고 평소 말로 요청하세요. AI는 열린 다이어그램을 보고 작업합니다.",
+        "You" => "나",
+        "OS Default" => "OS 기본값",
+        "Open with New Window..." => "새 윈도우에서 열기...",
+        "Center" => "가운데",
+        _ => return None,
+    })
+}
