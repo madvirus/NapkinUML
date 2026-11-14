@@ -4,3 +4,5 @@
 /dist
 /shots
 /*.json
+.openidea
+.idea
