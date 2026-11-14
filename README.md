@@ -32,7 +32,7 @@ AI 에이전트(Claude Code, Codex CLI, Gemini CLI, Ollama 등)는 NapkinUML에 
 
 ## 설치
 
-[GitHub Releases](https://github.com/madvirus/NapkinUML)에서 운영체제에 맞는 파일을 내려받습니다. 별도 설치 과정 없이 바로 실행할 수 있습니다.
+[GitHub Releases](https://github.com/madvirus/NapkinUML/releases)에서 운영체제에 맞는 파일을 내려받습니다. 별도 설치 과정 없이 바로 실행할 수 있습니다.
 
 | 운영체제 | 파일 |
 |---|---|
