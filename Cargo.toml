@@ -1,6 +1,6 @@
 [package]
 name = "napkin-uml"
-version = "0.1.0-SNAPSHOT"
+version = "0.1.0"
 edition = "2026"
 description = "A simple UML diagram editor"
 
