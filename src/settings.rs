@@ -26,6 +26,9 @@ pub struct Settings {
     pub ai_command: String,
     /// AI Assistant: the Ollama model ("" = the first one installed).
     pub ai_model: String,
+    /// Print: the paper last chosen ("A4", "A3"...) and orientation (0 auto, 1 portrait, 2 landscape).
+    pub print_paper: String,
+    pub print_orient: u8,
 }
 
 impl Default for Settings {
@@ -48,6 +51,8 @@ impl Default for Settings {
             ai_agent: String::new(),
             ai_command: String::new(),
             ai_model: String::new(),
+            print_paper: "A4".into(),
+            print_orient: 0,
         }
     }
 }

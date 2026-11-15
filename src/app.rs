@@ -49,7 +49,6 @@ enum Pending {
 
 enum Shot {
     Check(PathBuf),
-    Export(PathBuf),
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -86,6 +85,8 @@ enum Act {
     Save,
     SaveAs,
     ExportPng,
+    ExportMany,
+    Print,
     ProjectProperties,
     CloseProject,
     Exit,
@@ -418,6 +419,209 @@ fn navigable(kind: ConnKind) -> bool {
     matches!(kind, ConnKind::Association | ConnKind::Aggregation | ConnKind::Composition)
 }
 
+/// The "export several diagrams" dialog: which diagrams, and the folder to write them to.
+struct ExportDlg {
+    chosen: Vec<(u64, bool)>,
+    folder: Option<PathBuf>,
+    pk: Picker,
+}
+
+/// Search text and type filter of the diagram picker (Print and Export dialogs).
+#[derive(Default)]
+struct Picker {
+    search: String,
+    kind: Option<DiagramKind>,
+}
+
+/// Diagrams under a folder (and its subfolders) that pass the picker's filters; None = everything.
+fn picked_under(p: &Project, folder: Option<u64>, visible: &std::collections::HashSet<u64>) -> Vec<u64> {
+    let mut out: Vec<u64> = p.diagrams.iter().filter(|d| visible.contains(&d.id) && d.folder.filter(|f| p.folder(*f).is_some()) == folder).map(|d| d.id).collect();
+    for sub in p.folders.iter().filter(|x| x.parent == folder) {
+        out.extend(picked_under(p, Some(sub.id), visible));
+    }
+    out
+}
+
+/// One folder of the picker: a check box for everything inside it (a dash when only some
+/// are ticked), its subfolders, then its diagrams. The root (None) has no header.
+#[allow(clippy::too_many_arguments)]
+fn picker_folder(
+    ui: &mut egui::Ui,
+    salt: &str,
+    lang: Language,
+    p: &Project,
+    folder: Option<u64>,
+    visible: &std::collections::HashSet<u64>,
+    sel: &HashMap<u64, bool>,
+    actions: &mut Vec<(Vec<u64>, bool)>,
+    filtering: bool,
+) {
+    let mut subs: Vec<&Folder> = p.folders.iter().filter(|x| x.parent == folder).collect();
+    subs.sort_by_key(|x| x.name.to_lowercase());
+    let mut diagrams: Vec<&Diagram> = p.diagrams.iter().filter(|d| visible.contains(&d.id) && d.folder.filter(|f| p.folder(*f).is_some()) == folder).collect();
+    diagrams.sort_by_key(|d| d.name.to_lowercase());
+    let contents = |ui: &mut egui::Ui, actions: &mut Vec<(Vec<u64>, bool)>| {
+        for sub in &subs {
+            let ids = picked_under(p, Some(sub.id), visible);
+            if ids.is_empty() {
+                continue;
+            }
+            let all = ids.iter().all(|i| sel.get(i).copied().unwrap_or(false));
+            let any = ids.iter().any(|i| sel.get(i).copied().unwrap_or(false));
+            let id = ui.make_persistent_id((salt, sub.id));
+            // folders start folded (an overview of a big project), except those holding a ticked diagram
+            let mut state = egui::collapsing_header::CollapsingState::load_with_default_open(ui.ctx(), id, any);
+            if filtering {
+                state.set_open(true);
+            }
+            state
+                .show_header(ui, |ui| {
+                    let mut v = all;
+                    let ticked = ids.iter().filter(|i| sel.get(i).copied().unwrap_or(false)).count();
+                    let label = format!("🗀 {}  ({ticked}/{})", sub.name, ids.len());
+                    if ui.add(egui::Checkbox::new(&mut v, label).indeterminate(any && !all)).clicked() {
+                        actions.push((ids.clone(), !all));
+                    }
+                })
+                .body(|ui| picker_folder(ui, salt, lang, p, Some(sub.id), visible, sel, actions, filtering));
+        }
+        for d in &diagrams {
+            let mut v = sel.get(&d.id).copied().unwrap_or(false);
+            ui.horizontal(|ui| {
+                if ui.checkbox(&mut v, d.name.as_str()).changed() {
+                    actions.push((vec![d.id], v));
+                }
+                ui.weak(tr(lang, d.kind.label()));
+            });
+        }
+    };
+    contents(ui, actions);
+}
+
+/// The diagram chooser of the Print and Export dialogs, made for big projects: a search box
+/// (name or folder), a diagram-type filter, the diagrams grouped by folder with a check box per
+/// folder, buttons for what is shown, and a count of what is ticked.
+#[allow(clippy::too_many_arguments)]
+fn diagram_picker(ui: &mut egui::Ui, salt: &str, lang: Language, p: &Project, chosen: &mut [(u64, bool)], pk: &mut Picker, open_tabs: &[u64], current: Option<u64>, height: f32) {
+    let t = |s: &str| tr(lang, s).to_string();
+    let paths: HashMap<u64, String> = folder_paths(p).into_iter().collect();
+    ui.horizontal(|ui| {
+        ui.add(egui::TextEdit::singleline(&mut pk.search).hint_text(t("Search diagrams...")).desired_width(200.0));
+        if !pk.search.is_empty() && ui.small_button("×").on_hover_text(t("Clear")).clicked() {
+            pk.search.clear();
+        }
+        let mut kinds: Vec<DiagramKind> = DiagramKind::ALL.into_iter().filter(|k| p.diagrams.iter().any(|d| d.kind == *k)).collect();
+        kinds.dedup();
+        let shown = pk.kind.map(|k| t(k.label())).unwrap_or_else(|| t("All types"));
+        egui::ComboBox::from_id_salt((salt, "kind")).width(170.0).selected_text(shown).show_ui(ui, |ui| {
+            ui.selectable_value(&mut pk.kind, None, t("All types"));
+            for k in kinds {
+                ui.selectable_value(&mut pk.kind, Some(k), t(k.label()));
+            }
+        });
+    });
+    let needle = pk.search.trim().to_lowercase();
+    let visible: std::collections::HashSet<u64> = p
+        .diagrams
+        .iter()
+        .filter(|d| pk.kind.map(|k| d.kind == k).unwrap_or(true))
+        .filter(|d| needle.is_empty() || d.name.to_lowercase().contains(&needle) || d.folder.and_then(|f| paths.get(&f)).map(|x| x.to_lowercase().contains(&needle)).unwrap_or(false))
+        .map(|d| d.id)
+        .collect();
+    let filtering = !needle.is_empty() || pk.kind.is_some();
+    let sel: HashMap<u64, bool> = chosen.iter().copied().collect();
+    let mut actions: Vec<(Vec<u64>, bool)> = vec![];
+    ui.horizontal(|ui| {
+        let shown_ids: Vec<u64> = visible.iter().copied().collect();
+        if ui.small_button(t(if filtering { "Tick shown" } else { "Select All" })).clicked() {
+            actions.push((shown_ids.clone(), true));
+        }
+        if ui.small_button(t(if filtering { "Untick shown" } else { "Select None" })).clicked() {
+            actions.push((shown_ids, false));
+        }
+        if let Some(cur) = current {
+            if ui.small_button(t("Current tab only")).on_hover_text(t("Tick only the diagram shown in the editor now")).clicked() {
+                actions.push((p.diagrams.iter().map(|d| d.id).collect(), false));
+                actions.push((vec![cur], true));
+            }
+        }
+        if !open_tabs.is_empty() && ui.small_button(t("Open tabs only")).on_hover_text(t("Tick exactly the diagrams open in tabs")).clicked() {
+            actions.push((p.diagrams.iter().map(|d| d.id).collect(), false));
+            actions.push((open_tabs.to_vec(), true));
+        }
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            let n = chosen.iter().filter(|c| c.1).count();
+            ui.label(format!("{} {n} / {}", t("Selected"), chosen.len()));
+        });
+    });
+    egui::Frame::NONE.stroke(ui.visuals().widgets.noninteractive.bg_stroke).inner_margin(4.0).show(ui, |ui| {
+        egui::ScrollArea::vertical().id_salt((salt, "list")).max_height(height).min_scrolled_height(height).auto_shrink([false, false]).show(ui, |ui| {
+            if visible.is_empty() {
+                ui.weak(t("No diagram matches."));
+            } else {
+                picker_folder(ui, salt, lang, p, None, &visible, &sel, &mut actions, filtering);
+            }
+        });
+    });
+    for (ids, on) in actions {
+        for c in chosen.iter_mut() {
+            if ids.contains(&c.0) {
+                c.1 = on;
+            }
+        }
+    }
+}
+
+/// Diagrams being exported, one per frame, each drawn off screen (the window doesn't change).
+struct BatchExport {
+    queue: std::collections::VecDeque<(u64, PathBuf)>,
+    total: usize,
+    done: usize,
+    failed: usize,
+    folder: PathBuf,
+    /// Frames to wait before working, so the progress window is on screen first.
+    wait: u8,
+}
+
+/// What to do with the pages once every diagram has been drawn.
+#[derive(Clone)]
+enum PrintTo {
+    Printer,
+    Pdf(PathBuf),
+}
+
+/// The Print dialog: paper, orientation and the diagrams to print (one per page).
+struct PrintDlg {
+    paper: crate::print::Paper,
+    orient: crate::print::Orient,
+    chosen: Vec<(u64, bool)>,
+    pk: Picker,
+}
+
+/// Printing in progress: the pages are drawn off screen, one per frame.
+struct PrintJob {
+    to: PrintTo,
+    paper: crate::print::Paper,
+    orient: crate::print::Orient,
+    queue: std::collections::VecDeque<u64>,
+    total: usize,
+    pages: Vec<image::RgbImage>,
+    /// Frames to wait before the next step, so the progress window shows what comes next.
+    wait: u8,
+    /// Every page is drawn; the printer dialog (or the PDF) comes next.
+    finishing: bool,
+}
+
+/// A diagram name made safe as a file name.
+fn file_name_for(name: &str) -> String {
+    let mut s: String = name.chars().map(|c| if matches!(c, '\\' | '/' | ':' | '*' | '?' | '"' | '<' | '>' | '|') || c.is_control() { '_' } else { c }).collect();
+    s = s.trim().trim_end_matches('.').to_string();
+    if s.is_empty() {
+        s = "diagram".into();
+    }
+    s
+}
+
 struct AppOptionsDlg {
     s: Settings,
     page: usize,
@@ -469,7 +673,18 @@ pub struct UmlApp {
     fullscreen: bool,
     screenshot: Option<(PathBuf, u32)>,
     shot: Option<Shot>,
-    shot_wait: u32,
+    /// The fonts given to egui, also used to draw diagrams off screen.
+    font_defs: egui::FontDefinitions,
+    /// Project > Export > Multiple Diagrams: the dialog, then the export in progress.
+    export_dlg: Option<ExportDlg>,
+    batch: Option<BatchExport>,
+    /// Project > Print: the dialog, then the pictures being taken for the pages.
+    print_dlg: Option<PrintDlg>,
+    printing: Option<PrintJob>,
+    /// The progress window's Cancel was pressed.
+    job_cancel: bool,
+    /// Screen pixels per point, as of this frame.
+    ppp: f32,
     status: String,
     canvas_rect: Rect,
     prop_session: Option<(u64, u8)>,
@@ -494,6 +709,7 @@ fn sc(mods: Modifiers, key: Key) -> KeyboardShortcut {
 
 const SC_NEW: KeyboardShortcut = KeyboardShortcut::new(Modifiers::COMMAND, Key::N);
 const SC_OPEN: KeyboardShortcut = KeyboardShortcut::new(Modifiers::COMMAND, Key::O);
+const SC_PRINT: KeyboardShortcut = KeyboardShortcut::new(Modifiers::COMMAND, Key::P);
 const SC_SAVE: KeyboardShortcut = KeyboardShortcut::new(Modifiers::COMMAND, Key::S);
 const SC_SAVE_AS: KeyboardShortcut = KeyboardShortcut::new(Modifiers::COMMAND.plus(Modifiers::SHIFT), Key::S);
 const SC_UNDO: KeyboardShortcut = KeyboardShortcut::new(Modifiers::COMMAND, Key::Z);
@@ -585,7 +801,13 @@ impl UmlApp {
             fullscreen: false,
             screenshot: screenshot.map(|p| (p, 0)),
             shot: None,
-            shot_wait: 0,
+            font_defs: egui::FontDefinitions::default(),
+            export_dlg: None,
+            batch: None,
+            print_dlg: None,
+            printing: None,
+            job_cancel: false,
+            ppp: 1.0,
             status: String::new(),
             canvas_rect: Rect::NOTHING,
             prop_session: None,
@@ -652,6 +874,17 @@ impl UmlApp {
         // shape had just been dropped where it is
         if let Some(id) = std::env::var("NAPKINUML_JOIN").ok().and_then(|v| v.parse::<u64>().ok()) {
             app.join_interfaces(&[id]);
+        }
+        // for checking the Print dialog in pictures: NAPKINUML_PRINT_DLG=1
+        if std::env::var("NAPKINUML_PRINT_DLG").is_ok() {
+            app.open_print_dialog();
+            if let (Ok(s), Some(d)) = (std::env::var("NAPKINUML_PICK_SEARCH"), app.print_dlg.as_mut()) {
+                d.pk.search = s;
+            }
+        }
+        // for checking the multi-image export dialog in pictures: NAPKINUML_EXPORT_DLG=1
+        if std::env::var("NAPKINUML_EXPORT_DLG").is_ok() {
+            app.open_export_dialog();
         }
         // for checking the property pane in pictures: NAPKINUML_SELECT_FIRST=1
         if std::env::var("NAPKINUML_SELECT_FIRST").is_ok() {
@@ -1805,19 +2038,383 @@ impl UmlApp {
         }
     }
 
-    fn export_image(&mut self) {
+    // ---------- printing ----------
+
+    fn open_print_dialog(&mut self) {
+        let Some(p) = self.project.as_ref() else { return };
         if self.active.is_none() {
             return;
         }
+        // the open diagram is ticked; others can be added (each prints on its own page)
+        let chosen = p.diagrams.iter().map(|d| (d.id, Some(d.id) == self.active)).collect();
+        self.print_dlg = Some(PrintDlg { paper: crate::print::Paper::from_id(&self.settings.print_paper), orient: crate::print::Orient::from_code(self.settings.print_orient), chosen, pk: Picker::default() });
+    }
+
+    fn print_dialog(&mut self, ctx: &egui::Context) {
+        use crate::print::{Orient, Paper};
+        let Some(mut dlg) = self.print_dlg.take() else { return };
+        let Some(project) = self.project.clone() else { return };
+        let lang = self.settings.language;
+        let t = |s: &str| tr(lang, s).to_string();
+        let tabs = self.tabs.clone();
+        let current = self.active;
+        let esc = esc_cancels(ctx);
+        let mut action: Option<PrintTo> = None;
+        let mut cancel = false;
+        let mut open = true;
+        egui::Window::new(t("Print"))
+            .collapsible(false)
+            .resizable(false)
+            .anchor(Align2::CENTER_CENTER, [0.0, 0.0])
+            .open(&mut open)
+            .show(ctx, |ui| {
+                modal_dialog(ui);
+                ui.set_width(420.0);
+                egui::Grid::new("print_opts").num_columns(2).spacing([10.0, 8.0]).show(ui, |ui| {
+                    ui.label(t("Paper size"));
+                    egui::ComboBox::from_id_salt("print_paper").width(220.0).selected_text(dlg.paper.label()).show_ui(ui, |ui| {
+                        for p in Paper::ALL {
+                            ui.selectable_value(&mut dlg.paper, p, p.label());
+                        }
+                    });
+                    ui.end_row();
+                    ui.label(t("Orientation"));
+                    egui::ComboBox::from_id_salt("print_orient").width(220.0).selected_text(t(dlg.orient.label())).show_ui(ui, |ui| {
+                        for o in Orient::ALL {
+                            ui.selectable_value(&mut dlg.orient, o, t(o.label()));
+                        }
+                    });
+                    ui.end_row();
+                });
+                ui.weak(t("Each diagram is printed on its own page, made as large as the paper allows (10 mm margins)."));
+                ui.add_space(6.0);
+                ui.label(t("Diagrams to print:"));
+                diagram_picker(ui, "print_pick", lang, &project, &mut dlg.chosen, &mut dlg.pk, &tabs, current, 300.0);
+                ui.separator();
+                let n = dlg.chosen.iter().filter(|c| c.1).count();
+                ui.horizontal(|ui| {
+                    if ui.add_enabled(n > 0, egui::Button::new(format!("{} ({n})", t("Print...")))).clicked() {
+                        action = Some(PrintTo::Printer);
+                    }
+                    if ui.add_enabled(n > 0, egui::Button::new(t("Save as PDF..."))).clicked() {
+                        let name = if n == 1 {
+                            dlg.chosen.iter().find(|c| c.1).and_then(|c| project.diagram(c.0)).map(|d| file_name_for(&d.name)).unwrap_or_default()
+                        } else {
+                            file_name_for(&project.name)
+                        };
+                        if let Some(mut p) = rfd::FileDialog::new().add_filter("PDF", &["pdf"]).set_file_name(format!("{name}.pdf")).save_file() {
+                            if p.extension().is_none() {
+                                p.set_extension("pdf");
+                            }
+                            action = Some(PrintTo::Pdf(p));
+                        }
+                    }
+                    if ui.button(t("Cancel")).clicked() {
+                        cancel = true;
+                    }
+                });
+            });
+        if let Some(to) = action {
+            self.settings.print_paper = dlg.paper.id().to_string();
+            self.settings.print_orient = dlg.orient.code();
+            self.settings.save();
+            let ids: Vec<u64> = dlg.chosen.iter().filter(|c| c.1).map(|c| c.0).collect();
+            self.start_print(ids, to, dlg.paper, dlg.orient);
+        } else if !(cancel || esc || !open) {
+            self.print_dlg = Some(dlg);
+        }
+    }
+
+    fn start_print(&mut self, ids: Vec<u64>, to: PrintTo, paper: crate::print::Paper, orient: crate::print::Orient) {
+        if ids.is_empty() {
+            return;
+        }
+        self.commit_edit();
+        self.menu = None;
+        let total = ids.len();
+        self.printing = Some(PrintJob { to, paper, orient, queue: ids.into_iter().collect(), total, pages: vec![], wait: 3, finishing: false });
+        self.job_cancel = false;
+        self.status = format!("{} 1/{total}", tr(self.settings.language, "Preparing pages"));
+    }
+
+    /// The picture of one diagram drawn off screen, at `scale` pixels per unit and at most
+    /// `max_px` on its longer side.
+    fn picture_of(&self, id: u64, scale: f32, max_px: f32) -> Option<image::RgbImage> {
+        let p = self.project.as_ref()?;
+        let d = p.diagram(id)?;
+        Some(crate::offscreen::diagram_picture(d, &p.options, &self.look(), &self.font_defs, scale, max_px))
+    }
+
+    /// Printing and exporting several diagrams: one diagram each frame, so the window keeps
+    /// answering and shows how far it got. Esc stops.
+    fn work_jobs(&mut self, ctx: &egui::Context) {
+        let lang = self.settings.language;
+        let esc = ctx.input(|i| i.key_pressed(Key::Escape)) || std::mem::take(&mut self.job_cancel);
+        if self.printing.is_some() {
+            if esc {
+                self.printing = None;
+                self.status = tr(lang, "Printing cancelled.").to_string();
+                return;
+            }
+            ctx.request_repaint();
+            // let the progress window show first (and say what comes next)
+            if let Some(j) = self.printing.as_mut() {
+                if j.wait > 0 {
+                    j.wait -= 1;
+                    return;
+                }
+                if j.finishing {
+                    self.finish_print();
+                    return;
+                }
+            }
+            let next = self.printing.as_mut().and_then(|j| j.queue.pop_front());
+            let paper = self.printing.as_ref().map(|j| j.paper).unwrap_or(crate::print::Paper::A4);
+            if let Some(id) = next {
+                // sharp on paper: about 250 dots per inch over the printable length
+                if let Some(pic) = self.picture_of(id, 8.0, crate::print::target_long_px(paper)) {
+                    if let Some(j) = self.printing.as_mut() {
+                        j.pages.push(pic);
+                    }
+                }
+            }
+            if let Some(j) = self.printing.as_mut() {
+                if j.queue.is_empty() {
+                    j.finishing = true;
+                    j.wait = 2;
+                } else {
+                    self.status = format!("{} {}/{}", tr(lang, "Preparing pages"), j.pages.len() + 1, j.total);
+                }
+            }
+            return;
+        }
+        if self.batch.is_some() {
+            ctx.request_repaint();
+            if esc {
+                if let Some(b) = self.batch.as_mut() {
+                    b.queue.clear();
+                }
+            }
+            if let Some(b) = self.batch.as_mut() {
+                if b.wait > 0 && !b.queue.is_empty() {
+                    b.wait -= 1;
+                    return;
+                }
+            }
+            let next = self.batch.as_mut().and_then(|b| b.queue.pop_front());
+            if let Some((id, path)) = next {
+                let ok = self.picture_of(id, 2.0, 8000.0).map(|pic| save_rgb_png(&pic, &path)).unwrap_or(false);
+                if let Some(b) = self.batch.as_mut() {
+                    if ok {
+                        b.done += 1;
+                    } else {
+                        b.failed += 1;
+                    }
+                }
+            }
+            if let Some(b) = self.batch.as_ref() {
+                if b.queue.is_empty() {
+                    let b = self.batch.take().unwrap();
+                    self.status = if b.failed == 0 {
+                        format!("{} {} → {}", b.done, tr(lang, "images exported"), b.folder.display())
+                    } else {
+                        format!("{} {}, {} {} → {}", b.done, tr(lang, "images exported"), b.failed, tr(lang, "failed"), b.folder.display())
+                    };
+                } else {
+                    self.status = format!("{} {}/{}...", tr(lang, "Exporting"), b.done + b.failed + 1, b.total);
+                }
+            }
+            ctx.request_repaint();
+        }
+    }
+
+    /// A progress window over everything while pages are prepared or images exported, with a
+    /// progress bar, what is being done and a Cancel button (Esc works too).
+    fn job_progress(&mut self, ctx: &egui::Context) {
+        let lang = self.settings.language;
+        let t = |s: &str| tr(lang, s).to_string();
+        let (title, line, done, total) = if let Some(j) = &self.printing {
+            let to_pdf = matches!(j.to, PrintTo::Pdf(_));
+            let title = t(if to_pdf { "Saving as PDF..." } else { "Preparing to print..." });
+            let line = if j.finishing {
+                t(if to_pdf { "Writing the PDF file..." } else { "Opening the Print dialog..." })
+            } else {
+                format!("{} {} / {}", t("Preparing page"), (j.pages.len() + 1).min(j.total), j.total)
+            };
+            (title, line, j.pages.len(), j.total)
+        } else if let Some(b) = &self.batch {
+            let n = b.done + b.failed;
+            (t("Exporting images..."), format!("{} {} / {}", t("Exporting image"), (n + 1).min(b.total), b.total), n, b.total)
+        } else {
+            return;
+        };
+        ctx.set_cursor_icon(egui::CursorIcon::Progress);
+        let mut cancel = false;
+        // no fade-in: frames are slow while pages are drawn, so a fade would leave the window
+        // faint for the first few pages
+        let id = egui::Id::new("job_progress");
+        egui::Modal::new(id).area(egui::Modal::default_area(id).fade_in(false)).show(ctx, |ui| {
+            ui.set_width(340.0);
+            ui.horizontal(|ui| {
+                ui.spinner();
+                ui.heading(title);
+            });
+            ui.add_space(6.0);
+            ui.label(line);
+            ui.add(egui::ProgressBar::new(if total == 0 { 0.0 } else { done as f32 / total as f32 }).show_percentage());
+            ui.add_space(6.0);
+            ui.horizontal(|ui| {
+                if ui.button(t("Cancel")).clicked() {
+                    cancel = true;
+                }
+                ui.weak(t("Esc also cancels."));
+            });
+        });
+        if cancel {
+            self.job_cancel = true;
+        }
+    }
+
+    /// Every page is ready: print it or write the PDF.
+    fn finish_print(&mut self) {
+        let Some(job) = self.printing.take() else { return };
+        let lang = self.settings.language;
+        let n = job.pages.len();
+        let doc = self.project.as_ref().map(|p| p.name.clone()).unwrap_or_else(|| "NapkinUML".into());
+        if let (Ok(pdf), true) = (std::env::var("NAPKINUML_PRINT_PDF"), self.screenshot.is_some()) {
+            for (i, page) in job.pages.iter().enumerate() {
+                let _ = page.save(format!("{pdf}.page{}.png", i + 1));
+            }
+        }
+        self.status = match job.to {
+            PrintTo::Pdf(path) => match crate::print::write_pdf(&path, &job.pages, job.paper, job.orient) {
+                Ok(()) => format!("{n} {} → {}", tr(lang, "pages saved as PDF"), path.display()),
+                Err(e) => format!("{}: {e}", tr(lang, "Could not save the PDF")),
+            },
+            PrintTo::Printer => {
+                #[cfg(windows)]
+                {
+                    match crate::print::print_windows(&job.pages, job.paper, job.orient, &doc) {
+                        Ok(true) => format!("{n} {}", tr(lang, "pages sent to the printer")),
+                        Ok(false) => tr(lang, "Printing cancelled.").to_string(),
+                        Err(e) => format!("{}: {e}", tr(lang, "Could not print")),
+                    }
+                }
+                #[cfg(not(windows))]
+                {
+                    // elsewhere the pages open as a PDF in the system viewer, to print from there
+                    let path = std::env::temp_dir().join(format!("{}.pdf", file_name_for(&doc)));
+                    match crate::print::write_pdf(&path, &job.pages, job.paper, job.orient).and_then(|_| crate::print::open_with_system(&path)) {
+                        Ok(()) => tr(lang, "The pages opened in the PDF viewer; print them from there.").to_string(),
+                        Err(e) => format!("{}: {e}", tr(lang, "Could not print")),
+                    }
+                }
+            }
+        };
+    }
+
+    fn open_export_dialog(&mut self) {
+        let Some(p) = self.project.as_ref() else { return };
+        // every diagram is ticked at first; the folder starts beside the project file
+        let chosen = p.diagrams.iter().map(|d| (d.id, true)).collect();
+        let folder = self.path.as_ref().and_then(|f| f.parent().map(|d| d.to_path_buf()));
+        self.export_dlg = Some(ExportDlg { chosen, folder, pk: Picker::default() });
+    }
+
+    fn export_dialog(&mut self, ctx: &egui::Context) {
+        let Some(mut dlg) = self.export_dlg.take() else { return };
+        let Some(project) = self.project.clone() else { return };
+        let lang = self.settings.language;
+        let t = |s: &str| tr(lang, s).to_string();
+        let tabs = self.tabs.clone();
+        let current = self.active;
+        let esc = esc_cancels(ctx);
+        let mut go = false;
+        let mut cancel = false;
+        let mut open = true;
+        egui::Window::new(t("Export Images"))
+            .collapsible(false)
+            .resizable(false)
+            .anchor(Align2::CENTER_CENTER, [0.0, 0.0])
+            .open(&mut open)
+            .show(ctx, |ui| {
+                modal_dialog(ui);
+                ui.set_width(420.0);
+                ui.label(t("Diagrams to export (one PNG image each):"));
+                diagram_picker(ui, "export_pick", lang, &project, &mut dlg.chosen, &mut dlg.pk, &tabs, current, 300.0);
+                ui.separator();
+                ui.horizontal(|ui| {
+                    ui.label(t("Folder"));
+                    let shown = dlg.folder.as_ref().map(|p| p.display().to_string()).unwrap_or_else(|| t("(not chosen)"));
+                    ui.add(egui::Label::new(shown).truncate());
+                });
+                if ui.button(t("Choose Folder...")).clicked() {
+                    let mut fd = rfd::FileDialog::new();
+                    if let Some(f) = &dlg.folder {
+                        fd = fd.set_directory(f);
+                    }
+                    if let Some(f) = fd.pick_folder() {
+                        dlg.folder = Some(f);
+                    }
+                }
+                ui.weak(t("Files are named after the diagrams; existing files with the same name are replaced."));
+                ui.separator();
+                let n = dlg.chosen.iter().filter(|c| c.1).count();
+                ui.horizontal(|ui| {
+                    if ui.add_enabled(n > 0 && dlg.folder.is_some(), egui::Button::new(format!("{} ({n})", t("Export")))).clicked() {
+                        go = true;
+                    }
+                    if ui.button(t("Cancel")).clicked() {
+                        cancel = true;
+                    }
+                });
+            });
+        if go {
+            let folder = dlg.folder.clone().unwrap();
+            let ids: Vec<u64> = dlg.chosen.iter().filter(|c| c.1).map(|c| c.0).collect();
+            self.start_batch_export(ids, folder);
+        } else if !(cancel || esc || !open) {
+            self.export_dlg = Some(dlg);
+        }
+    }
+
+    /// Queue the diagrams; work_jobs draws and saves one per frame.
+    fn start_batch_export(&mut self, ids: Vec<u64>, folder: PathBuf) {
+        let Some(p) = self.project.as_ref() else { return };
+        let mut used: std::collections::HashSet<String> = std::collections::HashSet::new();
+        let mut queue = std::collections::VecDeque::new();
+        for id in ids {
+            let Some(d) = p.diagram(id) else { continue };
+            let base = file_name_for(&d.name);
+            let mut name = base.clone();
+            let mut k = 2;
+            while !used.insert(name.to_lowercase()) {
+                name = format!("{base} ({k})");
+                k += 1;
+            }
+            queue.push_back((id, folder.join(format!("{name}.png"))));
+        }
+        if queue.is_empty() {
+            return;
+        }
+        self.commit_edit();
+        self.menu = None;
+        let total = queue.len();
+        self.batch = Some(BatchExport { queue, total, done: 0, failed: 0, folder, wait: 3 });
+        self.job_cancel = false;
+    }
+
+    fn export_image(&mut self) {
+        let Some(id) = self.active else { return };
         let name = self.diag().map(|d| d.name.clone()).unwrap_or_default();
-        if let Some(mut p) = rfd::FileDialog::new().add_filter("PNG image", &["png"]).set_file_name(format!("{name}.png")).save_file() {
+        if let Some(mut p) = rfd::FileDialog::new().add_filter("PNG image", &["png"]).set_file_name(format!("{}.png", file_name_for(&name))).save_file() {
             if p.extension().is_none() {
                 p.set_extension("png");
             }
-            self.clear_selection();
-            self.fit_request = true;
-            self.shot = Some(Shot::Export(p));
-            self.shot_wait = 3;
+            self.commit_edit();
+            // drawn off screen at twice its 100% size, so the view doesn't move
+            let ok = self.picture_of(id, 2.0, 8000.0).map(|pic| save_rgb_png(&pic, &p)).unwrap_or(false);
+            self.status = if ok { format!("Exported {}", p.display()) } else { format!("Could not export {}", p.display()) };
         }
     }
 
@@ -1935,7 +2532,8 @@ impl UmlApp {
             a("Save", Some(&SC_SAVE), has_project, Act::Save),
             a("Save as...", Some(&SC_SAVE_AS), has_project, Act::SaveAs),
             MItem::Sep,
-            MItem::Sub { label: t("Export"), enabled: has_diagram, items: vec![a("Active Diagram as Image (PNG)...", None, true, Act::ExportPng)] },
+            MItem::Sub { label: t("Export"), enabled: has_diagram, items: vec![a("Active Diagram as Image (PNG)...", None, true, Act::ExportPng), a("Multiple Diagrams as Images (PNG)...", None, true, Act::ExportMany)] },
+            a("Print...", Some(&SC_PRINT), has_diagram, Act::Print),
             a("Project Properties...", None, has_project, Act::ProjectProperties),
             MItem::Sep,
             a("Close Project", None, has_project, Act::CloseProject),
@@ -2023,6 +2621,8 @@ impl UmlApp {
                 self.save_as();
             }
             Act::ExportPng => self.export_image(),
+            Act::ExportMany => self.open_export_dialog(),
+            Act::Print => self.open_print_dialog(),
             Act::ProjectProperties => self.open_project_options(0),
             Act::CloseProject => self.request(Pending::Close),
             Act::Exit => self.request(Pending::Exit),
@@ -4549,6 +5149,7 @@ impl UmlApp {
             return;
         }
         let (defs, loaded) = crate::fonts::build(&wanted);
+        self.font_defs = defs.clone();
         ctx.set_fonts(defs);
         self.fonts_ready = true;
         self.font_pending = loaded.clone();
@@ -4563,9 +5164,12 @@ impl UmlApp {
             return;
         }
         let typing = ctx.wants_keyboard_input();
-        let dialog_open = self.switcher.is_some() || self.confirm.is_some() || self.confirm_delete.is_some() || self.new_diagram.is_some() || self.app_opts.is_some() || self.proj_opts.is_some() || self.rename.is_some();
+        let dialog_open = self.switcher.is_some() || self.export_dlg.is_some() || self.batch.is_some() || self.print_dlg.is_some() || self.printing.is_some() || self.confirm.is_some() || self.confirm_delete.is_some() || self.new_diagram.is_some() || self.app_opts.is_some() || self.proj_opts.is_some() || self.rename.is_some();
         if ctx.input_mut(|i| i.consume_shortcut(&SC_SAVE_AS)) {
             self.save_as();
+        }
+        if ctx.input_mut(|i| i.consume_shortcut(&SC_PRINT)) {
+            self.open_print_dialog();
         }
         if ctx.input_mut(|i| i.consume_shortcut(&SC_SAVE)) {
             self.save();
@@ -4682,6 +5286,9 @@ impl UmlApp {
         self.project_options_dialog(ctx);
         self.switcher_dialog(ctx);
         self.rename_dialog(ctx);
+        self.export_dialog(ctx);
+        self.print_dialog(ctx);
+        self.job_progress(ctx);
         self.confirm_dialogs(ctx);
     }
 
@@ -5259,23 +5866,38 @@ impl UmlApp {
                         save_png(&image, &path);
                         ctx.send_viewport_cmd(egui::ViewportCommand::Close);
                     }
-                    Some(Shot::Export(path)) => {
-                        let ppp = ctx.pixels_per_point();
-                        let region = image.region(&self.canvas_rect, Some(ppp));
-                        if save_png(&region, &path) {
-                            self.status = format!("Exported {}", path.display());
-                        } else {
-                            self.status = format!("Could not export {}", path.display());
-                        }
-                    }
                     None => {}
                 }
             }
         }
         // the --screenshot option: draw about 120 frames, then take the picture
+        // for checking multi-diagram export: NAPKINUML_EXPORT_ALL=<folder> exports every diagram
+        // there a few frames into a --screenshot run
+        if let Some((_, 10)) = self.screenshot.as_ref() {
+            // for checking printing: NAPKINUML_PRINT_PDF=<file.pdf> prints the first three
+            // diagrams to that PDF (paper from NAPKINUML_PRINT_PAPER, A4 by default) and saves
+            // the page pictures beside it as PNG
+            if let Ok(pdf) = std::env::var("NAPKINUML_PRINT_PDF") {
+                let ids: Vec<u64> = self.project.as_ref().map(|p| p.diagrams.iter().take(3).map(|d| d.id).collect()).unwrap_or_default();
+                let paper = crate::print::Paper::from_id(&std::env::var("NAPKINUML_PRINT_PAPER").unwrap_or_default());
+                self.start_print(ids, PrintTo::Pdf(PathBuf::from(pdf)), paper, crate::print::Orient::Auto);
+                // NAPKINUML_JOB_HOLD=1 keeps the job at its first step (to photograph the progress window)
+                if std::env::var("NAPKINUML_JOB_HOLD").is_ok() {
+                    if let Some(j) = self.printing.as_mut() {
+                        j.wait = 250;
+                    }
+                }
+            }
+            if let Ok(dir) = std::env::var("NAPKINUML_EXPORT_ALL") {
+                let ids: Vec<u64> = self.project.as_ref().map(|p| p.diagrams.iter().map(|d| d.id).collect()).unwrap_or_default();
+                self.start_batch_export(ids, PathBuf::from(dir));
+            }
+        }
         if let Some((path, frames)) = self.screenshot.as_mut() {
             *frames += 1;
-            if *frames == 120 && self.shot.is_none() {
+            // NAPKINUML_SHOT_FRAME=<n> takes the picture at another frame (default 120)
+            let at = std::env::var("NAPKINUML_SHOT_FRAME").ok().and_then(|v| v.parse::<u32>().ok()).unwrap_or(120);
+            if *frames == at && self.shot.is_none() {
                 self.shot = Some(Shot::Check(path.clone()));
                 ctx.send_viewport_cmd(egui::ViewportCommand::Screenshot(egui::UserData::default()));
             }
@@ -5284,16 +5906,17 @@ impl UmlApp {
             }
             ctx.request_repaint();
         }
-        if let Some(Shot::Export(_)) = &self.shot {
-            if self.shot_wait > 0 {
-                self.shot_wait -= 1;
-                if self.shot_wait == 0 {
-                    ctx.send_viewport_cmd(egui::ViewportCommand::Screenshot(egui::UserData::default()));
-                }
-            }
-            ctx.request_repaint();
+
+    }
+}
+
+fn save_rgb_png(image: &image::RgbImage, path: &PathBuf) -> bool {
+    if let Some(dir) = path.parent() {
+        if !dir.as_os_str().is_empty() {
+            let _ = std::fs::create_dir_all(dir);
         }
     }
+    image.save(path).is_ok()
 }
 
 fn save_png(image: &egui::ColorImage, path: &PathBuf) -> bool {
@@ -5316,6 +5939,8 @@ fn save_png(image: &egui::ColorImage, path: &PathBuf) -> bool {
 
 impl eframe::App for UmlApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        self.ppp = ctx.pixels_per_point();
+        self.work_jobs(ctx);
         // fonts given to egui last frame are usable now
         for n in self.font_pending.drain(..) {
             render::register_family(&n);

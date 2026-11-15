@@ -19,6 +19,8 @@ mod fonts;
 mod i18n;
 mod model;
 mod palette;
+mod offscreen;
+mod print;
 mod render;
 mod seq;
 mod settings;

@@ -1448,6 +1448,67 @@ pub fn name_below_rect(painter: &Painter, cam: &Cam, shape: &Shape, look: &Look)
     Some(Rect::from_min_size(Pos2::new(top.x - galley.size().x / 2.0, top.y), galley.size()).expand(2.0))
 }
 
+/// The area a diagram covers (diagram units), with room for keywords above shapes, names and
+/// labels below and beside them, bend points, and a 12-unit margin. None for an empty diagram.
+pub fn diagram_bounds(d: &crate::model::Diagram) -> Option<(Pos2, Pos2)> {
+    if d.shapes.is_empty() {
+        return None;
+    }
+    let mut min = Pos2::new(f32::MAX, f32::MAX);
+    let mut max = Pos2::new(f32::MIN, f32::MIN);
+    let mut take = |x: f32, y: f32| {
+        min.x = min.x.min(x);
+        min.y = min.y.min(y);
+        max.x = max.x.max(x);
+        max.y = max.y.max(y);
+    };
+    for s in &d.shapes {
+        take(s.x - 10.0, s.y - 30.0);
+        take(s.x + s.w + 30.0, s.y + s.h + 24.0);
+    }
+    for c in &d.connectors {
+        for (x, y) in &c.points {
+            take(x - 10.0, y - 10.0);
+            take(x + 10.0, y + 10.0);
+        }
+    }
+    Some((min - Vec2::splat(12.0), max + Vec2::splat(12.0)))
+}
+
+/// Paint a whole diagram as the canvas shows it, without selection marks or handles:
+/// containers (largest first), other shapes, activation bars, lines (with jumps where they
+/// cross and message numbers), then network device names over the lines.
+pub fn paint_diagram(painter: &Painter, cam: &Cam, d: &crate::model::Diagram, look: &Look, opts: &ProjectOptions) {
+    let mut containers: Vec<&Shape> = d.shapes.iter().filter(|s| s.kind.is_container()).collect();
+    containers.sort_by(|a, b| (b.w * b.h).partial_cmp(&(a.w * a.h)).unwrap_or(std::cmp::Ordering::Equal));
+    for s in containers {
+        draw_shape(painter, cam, s, look, opts);
+    }
+    for s in d.shapes.iter().filter(|s| !s.kind.is_container()) {
+        draw_shape(painter, cam, s, look, opts);
+    }
+    let (lay, paths) = crate::seq::all_paths(d, opts);
+    if opts.show_activations {
+        for bar in &lay.bars {
+            if let Some(l) = d.shape(bar.lifeline) {
+                draw_activation(painter, cam, bar, l, look);
+            }
+        }
+    }
+    let screen: Vec<(u64, Vec<Pos2>)> = d.connectors.iter().filter_map(|c| paths.get(&c.id).map(|p| (c.id, p.iter().map(|(x, y)| cam.pt(*x, *y)).collect()))).collect();
+    let hops = crossings(&screen);
+    for c in &d.connectors {
+        let Some(path) = paths.get(&c.id) else { continue };
+        let Some(a) = d.shape(c.from) else { continue };
+        let b = d.shape(c.to).unwrap_or(a);
+        let h = hops.get(&c.id).map(|v| v.as_slice()).unwrap_or(&[]);
+        draw_connector(painter, cam, d.kind, c, a, b, look, opts, lay.numbers.get(&c.id).map(|s| s.as_str()), path, h, false);
+    }
+    for s in &d.shapes {
+        device_name_over_lines(painter, cam, s, look);
+    }
+}
+
 /// A network device's name drawn again on top of the lines, on a small patch of the
 /// background, so a line leaving the device downwards doesn't strike through it.
 pub fn device_name_over_lines(painter: &Painter, cam: &Cam, shape: &Shape, look: &Look) {
