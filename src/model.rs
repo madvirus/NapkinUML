@@ -465,12 +465,46 @@ pub struct Shape {
     /// Hide this class's operation compartment.
     #[serde(default)]
     pub hide_operations: bool,
+    /// Sequence lifelines: heights (diagram units) where the user split its activation; an
+    /// activation still open there ends, and the next message starts a new one.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub splits: Vec<f32>,
+    /// Sequence lifelines: activation stretches the user dragged out, as [top, bottom, depth];
+    /// they join the activations they overlap.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub act_spans: Vec<[f32; 3]>,
+    /// Alternative combined fragments: the lines between its sections, top to bottom (height
+    /// from the fragment's top, in diagram units) with each lower section's guard. None = one
+    /// [else] section from halfway down (files from before sections could be changed).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dividers: Option<Vec<Divider>>,
     /// Where the name shown beside the shape was dragged to (offset from its usual place).
     #[serde(default)]
     pub label_offset: (f32, f32),
 }
 
+/// A line between two sections of an alternative combined fragment.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+pub struct Divider {
+    /// Height below the fragment's top, in diagram units.
+    pub y: f32,
+    /// The guard of the section below the line ("else", a condition, or empty).
+    #[serde(default)]
+    pub guard: String,
+}
+
+/// Room at the top of an alt fragment for its tab and first guard.
+pub const ALT_HEAD: f32 = 34.0;
+
 impl Shape {
+    /// The section lines of an alternative fragment, top to bottom.
+    pub fn alt_dividers(&self) -> Vec<Divider> {
+        match &self.dividers {
+            Some(v) => v.clone(),
+            None if self.kind == ShapeKind::AltFragment => vec![Divider { y: self.h / 2.0, guard: "else".into() }],
+            None => vec![],
+        }
+    }
     pub fn contains_rect(&self, o: &Shape) -> bool {
         o.x >= self.x && o.y >= self.y && o.x + o.w <= self.x + self.w && o.y + o.h <= self.y + self.h
     }
@@ -558,6 +592,16 @@ pub struct Diagram {
     /// The folder the diagram is kept in (None = the project root).
     #[serde(default)]
     pub folder: Option<u64>,
+    /// Sequence numbers of this diagram; None follows the project (Project Options).
+    /// Whether messages are numbered.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub number_messages: Option<bool>,
+    /// SEQ_NESTED_LEVEL or SEQ_SINGLE_LEVEL.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sequence_numbering: Option<u8>,
+    /// false = automatic, true = manual (a number typed on a message wins).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub manual_numbering: Option<bool>,
 }
 
 /// A folder for grouping diagrams; folders nest up to 3 levels.
@@ -578,6 +622,18 @@ impl Diagram {
     }
     pub fn conn_mut(&mut self, id: u64) -> Option<&mut Connector> {
         self.connectors.iter_mut().find(|c| c.id == id)
+    }
+    /// Messages are numbered: the diagram's own choice, else the project's.
+    pub fn numbers_messages(&self, o: &ProjectOptions) -> bool {
+        self.number_messages.unwrap_or(o.number_messages)
+    }
+    /// The sequence number format: the diagram's own choice, else the project's.
+    pub fn numbering(&self, o: &ProjectOptions) -> u8 {
+        self.sequence_numbering.unwrap_or(o.sequence_numbering)
+    }
+    /// Manual sequence numbers: the diagram's own choice, else the project's.
+    pub fn manual(&self, o: &ProjectOptions) -> bool {
+        self.manual_numbering.unwrap_or(o.manual_numbering)
     }
 }
 
@@ -732,7 +788,7 @@ impl Project {
     pub fn add_diagram(&mut self, kind: DiagramKind, name: Option<String>) -> u64 {
         let id = self.fresh_id();
         let name = name.unwrap_or_else(|| self.next_diagram_name(kind));
-        self.diagrams.push(Diagram { id, name, kind, shapes: vec![], connectors: vec![], documentation: String::new(), folder: None });
+        self.diagrams.push(Diagram { id, name, kind, shapes: vec![], connectors: vec![], documentation: String::new(), folder: None, number_messages: None, sequence_numbering: None, manual_numbering: None });
         id
     }
 
@@ -988,6 +1044,9 @@ impl<'a> Builder<'a> {
             hide_icon: false,
             hide_attributes: false,
             hide_operations: false,
+            splits: Vec::new(),
+            act_spans: Vec::new(),
+            dividers: None,
             label_offset: (0.0, 0.0),
         });
         id

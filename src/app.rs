@@ -35,6 +35,11 @@ enum Drag {
     Rubber { start: Pos2, cur: Pos2 },
     Connect { from: u64, start: (f32, f32), cur: Pos2 },
     MoveMessage { id: u64, orig: f32, start: f32 },
+    /// Dragging the top or bottom handle of a selected activation: the bar as it was, and the
+    /// lifeline's splits and stretches before the drag (each frame starts again from them).
+    BarEdge { lifeline: u64, depth: usize, top: bool, y0: f32, y1: f32, splits0: Vec<f32>, spans0: Vec<[f32; 3]> },
+    /// Dragging a section line of an alternative fragment (its height when the drag began).
+    Divider { id: u64, idx: usize, orig: f32 },
 }
 
 #[derive(Clone)]
@@ -737,6 +742,13 @@ pub struct UmlApp {
     printing: Option<PrintJob>,
     /// The progress window's Cancel was pressed.
     job_cancel: bool,
+    /// Right-clicked on a sequence lifeline: (lifeline, height, on an activation bar, the
+    /// split point near the click).
+    seq_menu: Option<(u64, f32, bool, Option<f32>)>,
+    /// The selected activation bar: (lifeline, depth, a height inside it).
+    sel_bar: Option<(u64, usize, f32)>,
+    /// Right-clicked inside an alternative fragment: (fragment, height below its top).
+    alt_menu: Option<(u64, f32)>,
     /// Screen pixels per point, as of this frame.
     ppp: f32,
     status: String,
@@ -862,6 +874,9 @@ impl UmlApp {
             print_dlg: None,
             printing: None,
             job_cancel: false,
+            seq_menu: None,
+            sel_bar: None,
+            alt_menu: None,
             ppp: 1.0,
             status: String::new(),
             canvas_rect: Rect::NOTHING,
@@ -1018,6 +1033,7 @@ impl UmlApp {
     }
 
     fn clear_selection(&mut self) {
+        self.sel_bar = None;
         self.sel_shapes.clear();
         self.sel_conns.clear();
         self.prop_session = None;
@@ -1604,6 +1620,9 @@ impl UmlApp {
             hide_icon: false,
             hide_attributes: false,
             hide_operations: false,
+            splits: Vec::new(),
+            act_spans: Vec::new(),
+            dividers: None,
             label_offset: (0.0, 0.0),
         });
         self.clear_selection();
@@ -1728,14 +1747,17 @@ impl UmlApp {
             kind
         };
         let head = |s: &Shape| if s.kind == ShapeKind::ActorLifeline { 85.0 } else { 55.0 };
-        let min_y = (a.y + head(a)).max(b.y + head(b));
-        let max_y = (a.y + a.h).min(b.y + b.h) - 10.0;
+        // a Create message meets the head of the lifeline it creates, so only its sender limits it
+        let created = kind == ConnKind::CreateMessage && from != to;
+        let min_y = if created { a.y + head(a) } else { (a.y + head(a)).max(b.y + head(b)) };
+        let max_y = if created { a.y + a.h - 10.0 } else { (a.y + a.h).min(b.y + b.h) - 10.0 };
         let y = y.clamp(min_y, max_y.max(min_y));
         self.checkpoint();
         let p = self.project.as_mut().unwrap();
         let id = p.fresh_id();
         let d = p.diagram_mut(self.active.unwrap()).unwrap();
-        let name = if kind.is_message() && kind != ConnKind::ReturnMessage { "message()".to_string() } else { String::new() };
+        // new lines start without a name (messages too: no "message()" placeholder)
+        let name = String::new();
         d.connectors.push(Connector {
             id,
             kind,
@@ -1761,6 +1783,130 @@ impl UmlApp {
         self.sel_conns.push(id);
         if !self.sticky {
             self.tool = Tool::Select;
+        }
+    }
+
+    /// A message from a lifeline dropped where there is no lifeline: make one there (centred on
+    /// the drop point) and connect them, in one undo step. A Create message's lifeline has its
+    /// head at the message; for other messages it joins the lifelines along the top.
+    fn message_to_new_lifeline(&mut self, kind: ConnKind, from: u64, x: f32, press_y: f32) {
+        let Some(d) = self.diag() else { return };
+        let Some(src) = d.shape(from).cloned() else { return };
+        let head = |s: &Shape| if s.kind == ShapeKind::ActorLifeline { 85.0 } else { 55.0 };
+        let msg_y = press_y.clamp(src.y + head(&src), (src.y + src.h - 10.0).max(src.y + head(&src)));
+        let top = d.shapes.iter().filter(|s| y_locked(d, s)).map(|s| s.y).fold(f32::INFINITY, f32::min);
+        let top = if top.is_finite() { top } else { src.y };
+        let bottom = d.shapes.iter().filter(|s| s.kind.is_lifeline()).map(|s| s.y + s.h).fold(src.y + src.h, f32::max);
+        let y = if kind == ConnKind::CreateMessage { msg_y - lifeline_head(ShapeKind::Lifeline) / 2.0 } else { top };
+        let h = (bottom - y).max(msg_y - y + 60.0);
+        let undo_before = self.undo.len();
+        self.create_shape(ShapeKind::Lifeline, x, y);
+        let Some(&new_id) = self.sel_shapes.first() else { return };
+        if let Some(dm) = self.diag_mut() {
+            if let Some(s) = dm.shape_mut(new_id) {
+                s.x = x - s.w / 2.0;
+                s.y = y;
+                s.h = h;
+            }
+        }
+        let before = self.diag().map(|dm| dm.connectors.len()).unwrap_or(0);
+        self.create_connector(kind, from, new_id, msg_y);
+        if self.diag().map(|dm| dm.connectors.len()).unwrap_or(0) > before && self.undo.len() > undo_before + 1 {
+            // the shape and its message undo together
+            self.undo.pop();
+        }
+        // the new lifeline stays selected, with its name being typed
+        self.clear_selection();
+        self.sel_shapes.push(new_id);
+    }
+
+    /// Add a section at the bottom of an alternative fragment (splitting the last section; the
+    /// fragment grows if that section is too short). It becomes the [else] section; a section
+    /// that was [else] before keeps an empty guard to fill in.
+    fn add_alt_section(&mut self, id: u64) {
+        self.checkpoint();
+        let Some(s) = self.diag_mut().and_then(|d| d.shape_mut(id)) else { return };
+        let mut v = s.alt_dividers();
+        let top = v.last().map(|d| d.y).unwrap_or(crate::model::ALT_HEAD);
+        if s.h - top < 60.0 {
+            s.h = top + 80.0;
+        }
+        let y = (top + s.h) / 2.0;
+        let guard = if v.iter().any(|d| d.guard.trim() == "else") {
+            if let Some(last) = v.last_mut().filter(|d| d.guard.trim() == "else") {
+                last.guard.clear();
+                "else".to_string()
+            } else {
+                String::new()
+            }
+        } else {
+            "else".to_string()
+        };
+        v.push(crate::model::Divider { y, guard });
+        s.dividers = Some(v);
+    }
+
+    /// Take a section of an alternative fragment away: the one at `at` (height below the
+    /// fragment's top) unless that is the first, else the last one. The section above takes its
+    /// room.
+    fn remove_alt_section(&mut self, id: u64, at: Option<f32>) {
+        let count = self.diag().and_then(|d| d.shape(id)).map(|s| s.alt_dividers().len()).unwrap_or(0);
+        if count == 0 {
+            return;
+        }
+        self.checkpoint();
+        let Some(s) = self.diag_mut().and_then(|d| d.shape_mut(id)) else { return };
+        let mut v = s.alt_dividers();
+        let idx = at.and_then(|y| v.iter().rposition(|d| d.y <= y)).unwrap_or(v.len() - 1);
+        v.remove(idx);
+        s.dividers = Some(v);
+    }
+
+    /// The selected activation bar on screen, with its top and bottom handle points.
+    fn bar_handles(&self, d: &Diagram, cam: &Cam) -> Option<(Rect, Pos2, Pos2)> {
+        let (lid, depth, ymid) = self.sel_bar?;
+        if d.kind != DiagramKind::Sequence {
+            return None;
+        }
+        let opts = self.project.as_ref().map(|p| p.options.clone()).unwrap_or_default();
+        if !opts.show_activations {
+            return None;
+        }
+        let lay = crate::seq::layout(d, &opts);
+        let bar = lay.bars.iter().filter(|b| b.lifeline == lid && b.depth == depth).find(|b| ymid >= b.y0 - 0.5 && ymid <= b.y1 + 0.5)?;
+        let s = d.shape(lid)?;
+        let cx = s.x + s.w / 2.0 + bar.depth as f32 * crate::seq::BAR_STEP;
+        let r = Rect::from_min_max(cam.pt(cx - crate::seq::BAR_HALF, bar.y0), cam.pt(cx + crate::seq::BAR_HALF, bar.y1));
+        Some((r, Pos2::new(r.center().x, r.top()), Pos2::new(r.center().x, r.bottom())))
+    }
+
+    /// A click on an activation bar (not on a message) selects that bar.
+    fn bar_click(&mut self, d: &Diagram, cam: &Cam, p: Pos2) -> bool {
+        if d.kind != DiagramKind::Sequence || matches!(self.hit_any(cam, p), Some(EditTarget::Conn(_))) || self.label_at(p).is_some() {
+            return false;
+        }
+        let opts = self.project.as_ref().map(|p| p.options.clone()).unwrap_or_default();
+        let Some(b) = bar_at(d, &opts, cam.zoom, cam.to_diagram(p)) else { return false };
+        self.clear_selection();
+        self.sel_bar = Some((b.lifeline, b.depth, (b.y0 + b.y1) / 2.0));
+        true
+    }
+
+    /// End the lifeline's activation at this height (for a call whose return message is left
+    /// out); its next message starts a new activation.
+    fn split_activation(&mut self, lifeline: u64, y: f32) {
+        self.checkpoint();
+        if let Some(s) = self.diag_mut().and_then(|d| d.shape_mut(lifeline)) {
+            s.splits.push(y);
+            s.splits.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+        }
+    }
+
+    /// Take a split away again, so the activations on either side join.
+    fn join_activations(&mut self, lifeline: u64, y: f32) {
+        self.checkpoint();
+        if let Some(s) = self.diag_mut().and_then(|d| d.shape_mut(lifeline)) {
+            s.splits.retain(|v| (v - y).abs() > 0.01);
         }
     }
 
@@ -3638,6 +3784,9 @@ impl UmlApp {
                 ui.label(format!("{}", d.connectors.len()));
                 ui.end_row();
             });
+            if d.kind == DiagramKind::Sequence {
+                self.diagram_numbering(ui, &d);
+            }
             if name_changed {
                 self.edit_checkpoint((d.id, 1));
                 if let Some(dm) = self.diag_mut() {
@@ -3653,6 +3802,57 @@ impl UmlApp {
                 }
             }
         });
+    }
+
+    /// The sequence diagram's own numbering settings; "Project default" follows Project Options.
+    fn diagram_numbering(&mut self, ui: &mut egui::Ui, d: &Diagram) {
+        let lang = self.settings.language;
+        let t = |s: &str| tr(lang, s).to_string();
+        let o = self.project.as_ref().map(|p| p.options.clone()).unwrap_or_default();
+        let mut numbered = d.number_messages;
+        let mut format = d.sequence_numbering;
+        let mut manual = d.manual_numbering;
+        let on_off = |b: bool| if b { t("On") } else { t("Off") };
+        let fmt_name = |f: u8| if f == crate::model::SEQ_SINGLE_LEVEL { t("Single level") } else { t("Nested level") };
+        let hand_name = |m: bool| if m { t("Manual") } else { t("Automatic") };
+        let default_of = |s: String| format!("{} ({s})", t("Project default"));
+        ui.add_space(8.0);
+        ui.label(egui::RichText::new(t("Sequence numbers")).strong());
+        egui::Grid::new("diag_numbering").num_columns(2).spacing([8.0, 6.0]).show(ui, |ui| {
+            ui.label(t("Number messages"));
+            let shown = numbered.map(on_off).unwrap_or_else(|| default_of(on_off(o.number_messages)));
+            egui::ComboBox::from_id_salt("diag_num_on").width(165.0).selected_text(shown).show_ui(ui, |ui| {
+                ui.selectable_value(&mut numbered, None, default_of(on_off(o.number_messages)));
+                ui.selectable_value(&mut numbered, Some(true), t("On"));
+                ui.selectable_value(&mut numbered, Some(false), t("Off"));
+            });
+            ui.end_row();
+            ui.label(t("Sequence number format"));
+            let shown = format.map(fmt_name).unwrap_or_else(|| default_of(fmt_name(o.sequence_numbering)));
+            egui::ComboBox::from_id_salt("diag_num_fmt").width(165.0).selected_text(shown).show_ui(ui, |ui| {
+                ui.selectable_value(&mut format, None, default_of(fmt_name(o.sequence_numbering)));
+                ui.selectable_value(&mut format, Some(crate::model::SEQ_NESTED_LEVEL), format!("{} (1, 1.1, 1.2.1)", fmt_name(crate::model::SEQ_NESTED_LEVEL)));
+                ui.selectable_value(&mut format, Some(crate::model::SEQ_SINGLE_LEVEL), format!("{} (1, 2, 3)", fmt_name(crate::model::SEQ_SINGLE_LEVEL)));
+            });
+            ui.end_row();
+            ui.label(t("Sequence number handling"));
+            let shown = manual.map(hand_name).unwrap_or_else(|| default_of(hand_name(o.manual_numbering)));
+            egui::ComboBox::from_id_salt("diag_num_hand").width(165.0).selected_text(shown).show_ui(ui, |ui| {
+                ui.selectable_value(&mut manual, None, default_of(hand_name(o.manual_numbering)));
+                ui.selectable_value(&mut manual, Some(false), t("Automatic"));
+                ui.selectable_value(&mut manual, Some(true), t("Manual"));
+            });
+            ui.end_row();
+        });
+        if (numbered, format, manual) != (d.number_messages, d.sequence_numbering, d.manual_numbering) {
+            self.checkpoint();
+            if let Some(dm) = self.diag_mut() {
+                dm.number_messages = numbered;
+                dm.sequence_numbering = format;
+                dm.manual_numbering = manual;
+            }
+        }
+        ui.weak(t("These settings apply to this diagram only; Project default follows Window > Project Options."));
     }
 
     fn shape_properties(&mut self, ui: &mut egui::Ui, d: &Diagram, mut s: Shape) {
@@ -3812,6 +4012,43 @@ impl UmlApp {
                 field_changed = Some(5);
             }
         }
+        if s.kind == ShapeKind::AltFragment {
+            // the guard of each section below the first (whose guard is the name)
+            ui.add_space(6.0);
+            ui.label(tr(lang, "Sections"));
+            let mut v = s.alt_dividers();
+            let mut remove: Option<usize> = None;
+            let mut add = false;
+            let mut typed = false;
+            for (i, dv) in v.iter_mut().enumerate() {
+                ui.horizontal(|ui| {
+                    ui.label(format!("{}", i + 2));
+                    if ui.add(egui::TextEdit::singleline(&mut dv.guard).desired_width(160.0).hint_text(tr(lang, "guard"))).changed() {
+                        typed = true;
+                    }
+                    if ui.small_button("×").on_hover_text(tr(lang, "Remove Else Section")).clicked() {
+                        remove = Some(i);
+                    }
+                });
+            }
+            if ui.button(tr(lang, "Add Else Section")).clicked() {
+                add = true;
+            }
+            ui.weak(tr(lang, "Drag a section line on the diagram to change the sections' sizes."));
+            if typed {
+                s.dividers = Some(v.clone());
+                field_changed = Some(15);
+            }
+            if let Some(i) = remove {
+                v.remove(i);
+                s.dividers = Some(v.clone());
+                field_changed = Some(16);
+            }
+            if add {
+                self.add_alt_section(s.id);
+                return;
+            }
+        }
         if render::has_name_below(s.kind) && s.label_offset != (0.0, 0.0) && ui.button(tr(lang, "Reset Name Position")).clicked() {
             s.label_offset = (0.0, 0.0);
             field_changed = Some(13);
@@ -3883,7 +4120,7 @@ impl UmlApp {
             ui.label(tr(lang, "Target"));
             ui.label(to);
             ui.end_row();
-            let manual = self.project.as_ref().map(|p| p.options.manual_numbering).unwrap_or(false);
+            let manual = self.project.as_ref().map(|p| d.manual(&p.options)).unwrap_or(false);
             if c.kind.is_message() && d.kind == DiagramKind::Sequence && manual {
                 ui.label(tr(lang, "Sequence number"));
                 if ui.add(egui::TextEdit::singleline(&mut c.seq_no).desired_width(f32::INFINITY).hint_text(tr(lang, "Automatic"))).changed() {
@@ -4194,6 +4431,13 @@ impl UmlApp {
                 render::draw_selection(&painter, &cam, s, &look);
             }
         }
+        // the selected activation: outlined, with a handle at its top and bottom
+        if let Some((r, top, bottom)) = self.bar_handles(&d, &cam) {
+            painter.rect_stroke(r.expand(2.0), 0.0, Stroke::new(1.5_f32, look.accent()), StrokeKind::Middle);
+            for h in [top, bottom] {
+                painter.rect(Rect::from_center_size(h, Vec2::splat(7.0)), 0.0, Color32::WHITE, Stroke::new(1.2_f32, look.accent()), StrokeKind::Middle);
+            }
+        }
         // bend points (squares) and segment middles (dots) of the selected line
         if self.sel_conns.len() == 1 && self.sel_shapes.is_empty() {
             if let Some(c) = d.connectors.iter().find(|c| c.id == self.sel_conns[0]) {
@@ -4296,6 +4540,31 @@ impl UmlApp {
                 Tool::Shape(_) => {}
                 Tool::Select => {
                     let mut handled = false;
+                    // a section line of an alternative fragment?
+                    if !handled {
+                        if let Some((id, idx, y)) = divider_at(d, cam, origin) {
+                            self.checkpoint();
+                            if let Some(s) = self.diag_mut().and_then(|dm| dm.shape_mut(id)) {
+                                s.dividers = Some(s.alt_dividers());
+                            }
+                            self.clear_selection();
+                            self.sel_shapes.push(id);
+                            self.drag = Drag::Divider { id, idx, orig: y };
+                            handled = true;
+                        }
+                    }
+                    // the top or bottom handle of the selected activation?
+                    if let Some((r, top, bottom)) = self.bar_handles(d, cam) {
+                        let pick = if (origin - top).length() < 8.0 { Some(true) } else if (origin - bottom).length() < 8.0 { Some(false) } else { None };
+                        if let (Some(is_top), Some((lid, depth, _))) = (pick, self.sel_bar) {
+                            if let Some(s) = d.shape(lid) {
+                                self.checkpoint();
+                                let (y0, y1) = (cam.to_diagram(r.left_top()).1, cam.to_diagram(r.left_bottom()).1);
+                                self.drag = Drag::BarEdge { lifeline: lid, depth, top: is_top, y0, y1, splits0: s.splits.clone(), spans0: s.act_spans.clone() };
+                                handled = true;
+                            }
+                        }
+                    }
                     // an end of the selected line?
                     if self.sel_conns.len() == 1 && self.sel_shapes.is_empty() {
                         if let Some(c) = d.connectors.iter().find(|c| c.id == self.sel_conns[0]) {
@@ -4466,10 +4735,14 @@ impl UmlApp {
                 let mut label_move: Option<(LabelTarget, (f32, f32))> = None;
                 let mut end_move: Option<(u64, bool)> = None;
                 let mut line_move: Option<(u64, (f32, f32), (f32, f32), Vec<(f32, f32)>)> = None;
+                let mut bar_edit: Option<(u64, usize, bool, f32, f32, Vec<f32>, Vec<[f32; 3]>, f32)> = None;
+                let mut divider: Option<(u64, usize, f32)> = None;
+                let locked: std::collections::HashSet<u64> = if matches!(self.drag, Drag::Move { .. }) { d.shapes.iter().filter(|s| y_locked(&d, s)).map(|s| s.id).collect() } else { Default::default() };
                 match &mut self.drag {
                     Drag::Move { start, items, lines } => {
                         let (dx, dy) = (snapv(dp.0 - start.0), snapv(dp.1 - start.1));
-                        moves = items.iter().map(|(id, x, y)| (*id, x + dx, y + dy)).collect();
+                        // lifelines along the top of a sequence diagram move only sideways
+                        moves = items.iter().map(|(id, x, y)| (*id, x + dx, if locked.contains(id) { *y } else { y + dy })).collect();
                         line_moves = lines.iter().map(|(id, pts)| (*id, pts.iter().map(|(x, y)| (x + dx, y + dy)).collect())).collect();
                     }
                     Drag::MovePoint { id, idx } => point = Some((*id, *idx, (snapv(dp.0), snapv(dp.1)))),
@@ -4520,13 +4793,27 @@ impl UmlApp {
                     Drag::Rubber { cur, .. } => *cur = p,
                     Drag::Connect { cur, .. } => *cur = p,
                     Drag::MoveMessage { id, orig, start } => msg = Some((*id, *orig + dp.1 - *start)),
+                    Drag::BarEdge { lifeline, depth, top, y0, y1, splits0, spans0 } => bar_edit = Some((*lifeline, *depth, *top, *y0, *y1, splits0.clone(), spans0.clone(), snapv(dp.1))),
+                    Drag::Divider { id, idx, .. } => divider = Some((*id, *idx, snapv(dp.1))),
                     Drag::None => {}
+                }
+                // keep the bar selected by its edge that doesn't move
+                if let Some((lid, depth, top, y0, y1, ..)) = &bar_edit {
+                    self.sel_bar = Some((*lid, *depth, if *top { *y1 - 1.0 } else { *y0 + 1.0 }));
                 }
                 if let Some(dm) = self.diag_mut() {
                     for (id, x, y) in moves {
                         if let Some(s) = dm.shape_mut(id) {
                             s.x = x;
                             s.y = y;
+                        }
+                        // a created lifeline takes its Create message along (the line meets its head)
+                        if dm.kind == DiagramKind::Sequence {
+                            if let Some(head) = dm.shape(id).filter(|s| s.kind.is_lifeline()).map(|s| s.y + lifeline_head(s.kind) / 2.0) {
+                                for c in dm.connectors.iter_mut().filter(|c| c.kind == ConnKind::CreateMessage && c.to == id) {
+                                    c.y = head;
+                                }
+                            }
                         }
                     }
                     if let Some((id, x, y, w, h)) = resize {
@@ -4537,9 +4824,31 @@ impl UmlApp {
                             s.h = h;
                         }
                     }
+                    if let Some((id, idx, ny)) = divider {
+                        // a section line stays between its neighbours (and below the fragment's tab)
+                        if let Some(s) = dm.shape_mut(id) {
+                            set_divider(s, idx, ny);
+                        }
+                    }
+                    if let Some((lid, depth, top, y0, y1, splits0, spans0, ny)) = bar_edit.take() {
+                        if let Some(s) = dm.shape_mut(lid) {
+                            s.splits = splits0;
+                            s.act_spans = spans0;
+                            stretch_activation(s, depth, top, y0, y1, ny);
+                        }
+                    }
                     if let Some((id, y)) = msg {
                         if let Some(c) = dm.conn_mut(id) {
                             c.y = y;
+                        }
+                        // moving a Create message moves the head of the lifeline it creates (its bottom stays)
+                        let target = dm.connectors.iter().find(|c| c.id == id && c.kind == ConnKind::CreateMessage && c.from != c.to).map(|c| c.to);
+                        if let Some(s) = target.and_then(|t| dm.shape_mut(t)) {
+                            if s.kind.is_lifeline() {
+                                let bottom = s.y + s.h;
+                                s.y = y - lifeline_head(s.kind) / 2.0;
+                                s.h = (bottom - s.y).max(lifeline_head(s.kind) + 60.0);
+                            }
                         }
                     }
                     for (id, pts) in line_moves {
@@ -4624,6 +4933,14 @@ impl UmlApp {
                             if let Some(EditTarget::Shape(to) | EditTarget::Conn(to)) = self.hit_any(cam, cur) {
                                 self.create_anchor(from, to);
                             }
+                        } else if self.hit_shape(d, cam, cur, true).is_none() && d.kind == DiagramKind::Sequence && matches!(kind, ConnKind::Message | ConnKind::AsyncMessage | ConnKind::CreateMessage) {
+                            // nothing where the message was dropped: a new lifeline goes there
+                            let x = cam.to_diagram(cur).0;
+                            if let Some(src) = d.shape(from).filter(|s| s.kind.is_lifeline()) {
+                                if (x - (src.x + src.w / 2.0)).abs() >= 50.0 {
+                                    self.message_to_new_lifeline(kind, from, x, start.1);
+                                }
+                            }
                         } else if let Some(to) = self.hit_shape(d, cam, cur, true) {
                             let before = self.diag().map(|dm| dm.connectors.len()).unwrap_or(0);
                             self.create_connector(kind, from, to, start.1);
@@ -4643,6 +4960,18 @@ impl UmlApp {
                                 }
                             }
                         }
+                    }
+                }
+                Drag::Divider { id, idx, orig } => {
+                    let moved = self.diag().and_then(|dm| dm.shape(id)).map(|s| s.alt_dividers().get(idx).map(|v| (v.y - orig).abs() > 0.01).unwrap_or(false)).unwrap_or(false);
+                    if !moved {
+                        self.undo.pop();
+                    }
+                }
+                Drag::BarEdge { lifeline, splits0, spans0, .. } => {
+                    let same = self.diag().and_then(|dm| dm.shape(lifeline)).map(|s| s.splits == splits0 && s.act_spans == spans0).unwrap_or(true);
+                    if same {
+                        self.undo.pop();
                     }
                 }
                 Drag::Move { items, .. } => {
@@ -4670,6 +4999,8 @@ impl UmlApp {
         // clicks
         if resp.clicked_by(PointerButton::Primary) {
             if let Some(p) = pointer {
+                // a click on an activation bar selects the bar
+                let bar_hit = self.tool == Tool::Select && !shift && self.bar_click(d, cam, p);
                 match self.tool {
                     Tool::Shape(kind) => {
                         self.commit_edit();
@@ -4677,6 +5008,7 @@ impl UmlApp {
                         self.create_shape(kind, x, y);
                     }
                     Tool::Conn(_) => {}
+                    Tool::Select if bar_hit => {}
                     Tool::Select => match self.label_at(p).map(|t| t.owner()).or_else(|| self.hit_any(cam, p)) {
                         Some(EditTarget::Shape(id)) => {
                             if shift {
@@ -4709,7 +5041,16 @@ impl UmlApp {
             }
         }
         if resp.secondary_clicked() {
+            self.seq_menu = None;
+            self.alt_menu = None;
             if let Some(p) = pointer {
+                let (x, y) = cam.to_diagram(p);
+                self.alt_menu = d.shapes.iter().rev().find(|s| s.kind == ShapeKind::AltFragment && x >= s.x && x <= s.x + s.w && y >= s.y && y <= s.y + s.h).map(|s| (s.id, y - s.y));
+            }
+            if let Some(p) = pointer {
+                // a lifeline's activation bar or split point under the pointer (sequence diagrams)
+                let opts = self.project.as_ref().map(|p| p.options.clone()).unwrap_or_default();
+                self.seq_menu = seq_menu_target(&d, &opts, cam.zoom, cam.to_diagram(p));
                 match self.hit_any(cam, p) {
                     Some(EditTarget::Shape(id)) => {
                         if !self.sel_shapes.contains(&id) {
@@ -4745,12 +5086,21 @@ impl UmlApp {
             Drag::MoveLabel { .. } | Drag::MovePoint { .. } | Drag::MoveEnd { .. } => Some(C::Grabbing),
             Drag::Move { .. } | Drag::MoveMessage { .. } | Drag::MoveLine { .. } => Some(C::Move),
             Drag::Connect { .. } => Some(C::Crosshair),
+            Drag::BarEdge { .. } | Drag::Divider { .. } => Some(C::ResizeVertical),
             _ => None,
         };
         let icon = dragging.or_else(|| {
             let p = pointer?;
             if let Tool::Shape(_) | Tool::Conn(_) = self.tool {
                 return Some(C::Crosshair);
+            }
+            if let Some((_, top, bottom)) = self.bar_handles(d, cam) {
+                if (p - top).length() < 8.0 || (p - bottom).length() < 8.0 {
+                    return Some(C::ResizeVertical);
+                }
+            }
+            if self.tool == Tool::Select && divider_at(d, cam, p).is_some() {
+                return Some(C::ResizeVertical);
             }
             if self.sel_shapes.len() == 1 {
                 if let Some(s) = d.shape(self.sel_shapes[0]) {
@@ -4779,6 +5129,35 @@ impl UmlApp {
     }
 
     fn canvas_menu(&mut self, ui: &mut egui::Ui) {
+        // an alternative fragment: add an else section, or take the one under the pointer away
+        if let Some((id, at)) = self.alt_menu {
+            let count = self.diag().and_then(|d| d.shape(id)).map(|s| s.alt_dividers().len()).unwrap_or(0);
+            if self.menu_item(ui, "Add Else Section", None, true) {
+                self.add_alt_section(id);
+                self.alt_menu = None;
+            }
+            if self.menu_item(ui, "Remove Else Section", None, count > 0) {
+                self.remove_alt_section(id, Some(at));
+                self.alt_menu = None;
+            }
+            ui.separator();
+        }
+        // a lifeline's activation: split it here, or join it again at a split point
+        if let Some((lid, y, on_bar, near)) = self.seq_menu {
+            if on_bar && self.menu_item(ui, "Split Activation", None, true) {
+                self.split_activation(lid, y);
+                self.seq_menu = None;
+            }
+            if let Some(ys) = near {
+                if self.menu_item(ui, "Join Activations", None, true) {
+                    self.join_activations(lid, ys);
+                    self.seq_menu = None;
+                }
+            }
+            if on_bar || near.is_some() {
+                ui.separator();
+            }
+        }
         let one_conn = if self.sel_conns.len() == 1 && self.sel_shapes.is_empty() {
             self.diag().and_then(|d| d.connectors.iter().find(|c| c.id == self.sel_conns[0]).map(|c| (c.clone(), d.kind)))
         } else {
@@ -5415,9 +5794,12 @@ impl UmlApp {
             self.edit_checkpoint((0, 200));
             let ids = self.sel_shapes.clone();
             if let Some(d) = self.diag_mut() {
+                let locked: Vec<u64> = d.shapes.iter().filter(|s| y_locked(d, s)).map(|s| s.id).collect();
                 for s in d.shapes.iter_mut().filter(|s| ids.contains(&s.id)) {
                     s.x += dv.x;
-                    s.y += dv.y;
+                    if !locked.contains(&s.id) {
+                        s.y += dv.y;
+                    }
                 }
             }
         }
@@ -6023,6 +6405,74 @@ impl UmlApp {
             if std::env::var("NAPKINUML_COPY_IMAGE").is_ok() {
                 self.copy_as_image();
             }
+            // for checking Split Activation: NAPKINUML_SPLIT_AT=<x>,<y> (diagram units) right-clicks there
+            // and picks Split Activation (or Join Activations when on a split point)
+            // for checking activation handles: NAPKINUML_BAR_EDGE=<x>,<y>[,top|bottom,<new y>] selects the
+            // bar there and (optionally) moves its top or bottom edge, as dragging its handle does
+            if let Ok(v) = std::env::var("NAPKINUML_BAR_EDGE") {
+                let parts: Vec<&str> = v.split(',').collect();
+                let num = |i: usize| parts.get(i).and_then(|p| p.parse::<f32>().ok());
+                let opts = self.project.as_ref().map(|p| p.options.clone()).unwrap_or_default();
+                if let (Some(d), Some(x), Some(y)) = (self.diag().cloned(), num(0), num(1)) {
+                    if let Some(b) = bar_at(&d, &opts, 1.0, (x, y)) {
+                        self.clear_selection();
+                        self.sel_bar = Some((b.lifeline, b.depth, (b.y0 + b.y1) / 2.0));
+                        if let Some(ny) = num(3) {
+                            let top = parts.get(2) == Some(&"top");
+                            self.checkpoint();
+                            if let Some(s) = self.diag_mut().and_then(|dm| dm.shape_mut(b.lifeline)) {
+                                stretch_activation(s, b.depth, top, b.y0, b.y1, ny);
+                            }
+                            self.sel_bar = Some((b.lifeline, b.depth, if top { b.y1 - 1.0 } else { b.y0 + 1.0 }));
+                        }
+                    }
+                }
+            }
+            // for checking alt sections: NAPKINUML_ALT=<cmd>;<cmd>... on the first alt fragment, each
+            // cmd add, remove[@<y>] or move:<line>:<y> (y in diagram units, as the drag and menu do)
+            if let Ok(v) = std::env::var("NAPKINUML_ALT") {
+                let id = self.diag().and_then(|d| d.shapes.iter().find(|s| s.kind == ShapeKind::AltFragment).map(|s| (s.id, s.y)));
+                if let Some((id, top)) = id {
+                    for cmd in v.split(';') {
+                        let parts: Vec<&str> = cmd.split(':').collect();
+                        if cmd == "add" {
+                            self.add_alt_section(id);
+                        } else if let Some(rest) = cmd.strip_prefix("remove") {
+                            let at = rest.strip_prefix('@').and_then(|y| y.parse::<f32>().ok()).map(|y| y - top);
+                            self.remove_alt_section(id, at);
+                        } else if let (Some(&"move"), Some(i), Some(y)) = (parts.first(), parts.get(1).and_then(|p| p.parse::<usize>().ok()), parts.get(2).and_then(|p| p.parse::<f32>().ok())) {
+                            self.checkpoint();
+                            if let Some(s) = self.diag_mut().and_then(|dm| dm.shape_mut(id)) {
+                                set_divider(s, i, y);
+                            }
+                        }
+                    }
+                    self.clear_selection();
+                    self.sel_shapes.push(id);
+                }
+            }
+            if let Ok(v) = std::env::var("NAPKINUML_SPLIT_AT") {
+                let n: Vec<f32> = v.split(',').filter_map(|p| p.parse().ok()).collect();
+                let opts = self.project.as_ref().map(|p| p.options.clone()).unwrap_or_default();
+                if let (Some(d), [x, y]) = (self.diag().cloned(), n.as_slice()) {
+                    match seq_menu_target(&d, &opts, 1.0, (*x, *y)) {
+                        Some((lid, _, _, Some(ys))) => self.join_activations(lid, ys),
+                        Some((lid, yy, true, None)) => self.split_activation(lid, yy),
+                        other => self.status = format!("split test: {other:?}"),
+                    }
+                }
+            }
+            // for checking drop-to-create: NAPKINUML_DROP_MESSAGE=<message|async|create>,<x>,<y> drops a
+            // message from the first lifeline at x (diagram units), pressed at height y
+            if let Ok(v) = std::env::var("NAPKINUML_DROP_MESSAGE") {
+                let parts: Vec<&str> = v.split(',').collect();
+                let kind = match parts.first().copied() { Some("create") => ConnKind::CreateMessage, Some("async") => ConnKind::AsyncMessage, _ => ConnKind::Message };
+                let num = |i: usize| parts.get(i).and_then(|p| p.parse::<f32>().ok()).unwrap_or(0.0);
+                if let Some(first) = self.diag().and_then(|d| d.shapes.iter().find(|s| s.kind.is_lifeline()).map(|s| s.id)) {
+                    self.message_to_new_lifeline(kind, first, num(1), num(2));
+                    self.editing = None;
+                }
+            }
             // for checking printing: NAPKINUML_PRINT_PDF=<file.pdf> prints the first three
             // diagrams to that PDF (paper from NAPKINUML_PRINT_PAPER, A4 by default) and saves
             // the page pictures beside it as PNG
@@ -6062,6 +6512,124 @@ impl UmlApp {
 }
 
 /// Save a picture as PNG, JPEG (quality 92) or lossless WebP, by the file's extension.
+/// Move a section line of an alternative fragment to height `ny` (diagram units), keeping it
+/// 20 below the line above (or below the fragment's tab) and 20 above the line below (10 above
+/// the bottom for the last).
+fn set_divider(s: &mut Shape, idx: usize, ny: f32) {
+    let mut v = s.alt_dividers();
+    if idx < v.len() {
+        let lo = if idx == 0 { crate::model::ALT_HEAD } else { v[idx - 1].y + 20.0 };
+        let hi = if idx + 1 < v.len() { v[idx + 1].y - 20.0 } else { s.h - 10.0 };
+        v[idx].y = (ny - s.y).clamp(lo, hi.max(lo));
+        s.dividers = Some(v);
+    }
+}
+
+/// The section line of an alternative fragment under a screen point: (fragment, line index,
+/// its height in diagram units).
+fn divider_at(d: &Diagram, cam: &Cam, p: Pos2) -> Option<(u64, usize, f32)> {
+    for s in d.shapes.iter().rev().filter(|s| s.kind == ShapeKind::AltFragment) {
+        let r = cam.rect(s);
+        if p.x < r.left() || p.x > r.right() {
+            continue;
+        }
+        for (i, dv) in s.alt_dividers().iter().enumerate() {
+            let y = s.y + dv.y.clamp(crate::model::ALT_HEAD.min(s.h), s.h.max(0.0));
+            if (cam.pt(0.0, y).y - p.y).abs() <= 5.0 {
+                return Some((s.id, i, dv.y));
+            }
+        }
+    }
+    None
+}
+
+/// The activation bar under a point (diagram units) of a sequence diagram, innermost first.
+fn bar_at(d: &Diagram, opts: &crate::model::ProjectOptions, zoom: f32, (x, y): (f32, f32)) -> Option<crate::seq::Bar> {
+    if d.kind != DiagramKind::Sequence || !opts.show_activations {
+        return None;
+    }
+    let slack = 4.0 / zoom.max(0.1);
+    let lay = crate::seq::layout(d, opts);
+    lay.bars
+        .iter()
+        .filter(|b| y >= b.y0 && y <= b.y1)
+        .filter(|b| {
+            d.shape(b.lifeline).map(|s| {
+                let cx = s.x + s.w / 2.0 + b.depth as f32 * crate::seq::BAR_STEP;
+                (x - cx).abs() <= crate::seq::BAR_HALF + slack
+            }).unwrap_or(false)
+        })
+        .max_by_key(|b| b.depth)
+        .cloned()
+}
+
+/// Move an activation's top or bottom edge to height `ny`. Stretching out adds a stretch
+/// (which joins any activation it reaches); pulling the bottom in ends it there with a split;
+/// pulling the top back in only takes back stretches (a bar can't start after its message).
+fn stretch_activation(s: &mut Shape, depth: usize, top: bool, y0: f32, y1: f32, ny: f32) {
+    let dep = depth as f32;
+    if top {
+        let ny = ny.min(y1 - 10.0);
+        if ny < y0 {
+            s.act_spans.push([ny, y0 + 1.0, dep]);
+        } else {
+            for sp in s.act_spans.iter_mut().filter(|sp| sp[2] == dep && sp[0] < ny && sp[1] > y0 - 0.5) {
+                sp[0] = ny;
+            }
+        }
+    } else {
+        let ny = ny.max(y0 + 10.0);
+        if ny > y1 {
+            s.act_spans.push([y1 - 1.0, ny, dep]);
+        } else {
+            for sp in s.act_spans.iter_mut().filter(|sp| sp[2] == dep && sp[1] > ny && sp[0] < y1 + 0.5) {
+                sp[1] = ny;
+            }
+            if ny < y1 - 0.5 {
+                s.splits.push(ny);
+                s.splits.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+            }
+        }
+    }
+    s.act_spans.retain(|sp| sp[1] - sp[0] > 0.5);
+}
+
+/// What a right-click at this point (diagram units) touches in a sequence diagram: the
+/// lifeline, the height, whether it is on an activation bar, and a split point near it.
+fn seq_menu_target(d: &Diagram, opts: &crate::model::ProjectOptions, zoom: f32, (x, y): (f32, f32)) -> Option<(u64, f32, bool, Option<f32>)> {
+    if d.kind != DiagramKind::Sequence {
+        return None;
+    }
+    let lay = crate::seq::layout(d, opts);
+    let slack = 4.0 / zoom.max(0.1);
+    let bar = lay.bars.iter().filter(|b| y >= b.y0 && y <= b.y1).find(|b| {
+        d.shape(b.lifeline).map(|s| {
+            let cx = s.x + s.w / 2.0 + b.depth as f32 * crate::seq::BAR_STEP;
+            opts.show_activations && (x - cx).abs() <= crate::seq::BAR_HALF + slack
+        }).unwrap_or(false)
+    });
+    let line = d.shapes.iter().filter(|s| s.kind.is_lifeline() && y > s.y && y < s.y + s.h).find(|s| (x - (s.x + s.w / 2.0)).abs() <= crate::seq::BAR_HALF + 3.0 * crate::seq::BAR_STEP + slack);
+    let lid = bar.map(|b| b.lifeline).or(line.map(|s| s.id))?;
+    let near = d.shape(lid).and_then(|s| s.splits.iter().copied().filter(|v| (v - y).abs() <= 12.0 / zoom.max(0.1)).min_by(|a, b| (a - y).abs().partial_cmp(&(b - y).abs()).unwrap_or(std::cmp::Ordering::Equal)));
+    Some((lid, y, bar.is_some(), near))
+}
+
+/// In a sequence diagram the lifelines and actors along the top move only sideways, so they
+/// stay lined up; a lifeline made by a Create message sits at that message instead.
+fn y_locked(d: &Diagram, s: &Shape) -> bool {
+    d.kind == DiagramKind::Sequence && s.kind.is_lifeline() && !is_created(d, s.id)
+}
+
+/// The lifeline is the target of a Create message.
+fn is_created(d: &Diagram, id: u64) -> bool {
+    d.connectors.iter().any(|c| c.kind == ConnKind::CreateMessage && c.to == id)
+}
+
+/// Height of a lifeline's head box (where a Create message meets it in the middle).
+fn lifeline_head(kind: ShapeKind) -> f32 {
+    if kind == ShapeKind::Lifeline { 40.0 } else { 70.0 }
+}
+
 fn save_picture(image: &image::RgbImage, path: &PathBuf) -> bool {
     if let Some(dir) = path.parent() {
         if !dir.as_os_str().is_empty() {

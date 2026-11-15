@@ -852,9 +852,14 @@ pub fn draw_shape(painter: &Painter, cam: &Cam, shape: &Shape, look: &Look, opts
                 text_at(painter, look, Pos2::new(r.left() + 8.0 * z, r.top() + th + 4.0 * z), Align2::LEFT_TOP, &format!("[{}]", shape.name), f.clone(), tc);
             }
             if shape.kind == AltFragment {
-                let my = r.center().y;
-                dashed(painter, &[Pos2::new(r.left(), my), Pos2::new(r.right(), my)], stroke, z);
-                text_at(painter, look, Pos2::new(r.left() + 8.0 * z, my + 4.0 * z), Align2::LEFT_TOP, "[else]", f.clone(), tc);
+                // the sections, each with its guard under its line
+                for dv in shape.alt_dividers() {
+                    let my = r.top() + dv.y.clamp(crate::model::ALT_HEAD.min(shape.h), shape.h.max(0.0)) * z;
+                    dashed(painter, &[Pos2::new(r.left(), my), Pos2::new(r.right(), my)], stroke, z);
+                    if !dv.guard.trim().is_empty() {
+                        text_at(painter, look, Pos2::new(r.left() + 8.0 * z, my + 4.0 * z), Align2::LEFT_TOP, &format!("[{}]", dv.guard.trim()), f.clone(), tc);
+                    }
+                }
             }
         }
         Initial => {
@@ -1378,10 +1383,9 @@ pub fn draw_connector(
     let mut name = c.name.clone();
     if dkind == DiagramKind::Sequence && c.kind.is_message() {
         if let Some(num) = number {
-            // every message is numbered, return messages too
-            if opts.number_messages {
-                name = if c.name.is_empty() { num.to_string() } else { format!("{num}: {}", c.name) };
-            }
+            // every message is numbered, return messages too (no number when numbering is off
+            // for the diagram or the project: seq::layout leaves it out)
+            name = if c.name.is_empty() { num.to_string() } else { format!("{num}: {}", c.name) };
         }
     }
     if !name.is_empty() {
@@ -1685,6 +1689,9 @@ pub fn draw_icon(painter: &Painter, rect: Rect, tool: Tool, look: &Look, opts: &
                 hide_icon: false,
                 hide_attributes: false,
                 hide_operations: false,
+                splits: Vec::new(),
+                act_spans: Vec::new(),
+                dividers: None,
                 label_offset: (0.0, 0.0),
             };
             if kind == ShapeKind::Constraint {
