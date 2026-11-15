@@ -40,6 +40,8 @@ enum Drag {
     BarEdge { lifeline: u64, depth: usize, top: bool, y0: f32, y1: f32, splits0: Vec<f32>, spans0: Vec<[f32; 3]> },
     /// Dragging a section line of an alternative fragment (its height when the drag began).
     Divider { id: u64, idx: usize, orig: f32 },
+    /// Dragging the line after partition `idx` of a swimlane (the sizes when the drag began).
+    PartEdge { id: u64, idx: usize, vertical: bool, orig: Vec<f32> },
 }
 
 #[derive(Clone)]
@@ -70,6 +72,8 @@ struct InlineEdit {
     line: Option<(bool, usize)>,
     /// The line was added for this edit (removed again if left empty).
     new_line: bool,
+    /// Editing the name of one partition of a swimlane, by index.
+    part: Option<usize>,
 }
 
 /// A handle of the selected line: a bend point, or the middle dot of a segment.
@@ -172,12 +176,16 @@ fn mnemonic_job(label: &str, key: char, color: Color32, font: egui::FontId) -> e
 enum LabelTarget {
     Conn(u64),
     Shape(u64),
+    /// The source end label of a line.
+    ConnFrom(u64),
+    /// The target end label of a line.
+    ConnTo(u64),
 }
 
 impl LabelTarget {
     fn owner(self) -> EditTarget {
         match self {
-            LabelTarget::Conn(id) => EditTarget::Conn(id),
+            LabelTarget::Conn(id) | LabelTarget::ConnFrom(id) | LabelTarget::ConnTo(id) => EditTarget::Conn(id),
             LabelTarget::Shape(id) => EditTarget::Shape(id),
         }
     }
@@ -749,6 +757,8 @@ pub struct UmlApp {
     sel_bar: Option<(u64, usize, f32)>,
     /// Right-clicked inside an alternative fragment: (fragment, height below its top).
     alt_menu: Option<(u64, f32)>,
+    /// Right-clicked inside a swimlane: (swimlane, distance along it).
+    lane_menu: Option<(u64, f32)>,
     /// Screen pixels per point, as of this frame.
     ppp: f32,
     status: String,
@@ -877,6 +887,7 @@ impl UmlApp {
             seq_menu: None,
             sel_bar: None,
             alt_menu: None,
+            lane_menu: None,
             ppp: 1.0,
             status: String::new(),
             canvas_rect: Rect::NOTHING,
@@ -1608,7 +1619,7 @@ impl UmlApp {
             y: sy,
             w,
             h,
-            name: name.clone(),
+            name: if kind.is_swimlane() { String::new() } else { name.clone() },
             stereotype: String::new(),
             attributes,
             operations: vec![],
@@ -1623,6 +1634,12 @@ impl UmlApp {
             splits: Vec::new(),
             act_spans: Vec::new(),
             dividers: None,
+            partitions: if kind.is_swimlane() {
+                let half = if kind == ShapeKind::VerticalSwimlane { w / 2.0 } else { h / 2.0 };
+                Some(vec![crate::model::Partition { name: "Partition".into(), size: half }, crate::model::Partition { name: "Partition2".into(), size: half }])
+            } else {
+                None
+            },
             label_offset: (0.0, 0.0),
         });
         self.clear_selection();
@@ -1630,9 +1647,9 @@ impl UmlApp {
         if kind == ShapeKind::Port {
             self.snap_port_to_owner(id);
         }
-        let editable = (!kind.is_pseudo() || kind == ShapeKind::Actor || kind.is_network_device()) && !matches!(kind, ShapeKind::AltFragment | ShapeKind::LoopFragment);
+        let editable = (!kind.is_pseudo() || kind == ShapeKind::Actor || kind.is_network_device()) && !matches!(kind, ShapeKind::AltFragment | ShapeKind::LoopFragment) && !kind.is_swimlane();
         if editable {
-            self.editing = Some(InlineEdit { target: EditTarget::Shape(id), text: name, focus: true, line: None, new_line: false });
+            self.editing = Some(InlineEdit { target: EditTarget::Shape(id), text: name, focus: true, line: None, new_line: false, part: None });
         }
         if !self.sticky {
             self.tool = Tool::Select;
@@ -1775,6 +1792,8 @@ impl UmlApp {
             nav_from: crate::model::NAV_TRUE,
             nav_to: crate::model::NAV_TRUE,
             seq_no: String::new(),
+            from_label_offset: (0.0, 0.0),
+            to_label_offset: (0.0, 0.0),
             label_offset: (0.0, 0.0),
             from_anchor: None,
             to_anchor: None,
@@ -1862,6 +1881,30 @@ impl UmlApp {
         s.dividers = Some(v);
     }
 
+    /// Insert a partition into a swimlane after partition `after`; the swimlane grows and what
+    /// stood in the partitions after it moves along with them.
+    fn add_partition(&mut self, id: u64, after: usize) {
+        self.checkpoint();
+        let Some(dm) = self.diag_mut() else { return };
+        let Some(before) = dm.shape(id).cloned() else { return };
+        let Some((at, size)) = dm.shape_mut(id).map(|s| s.add_partition(after)) else { return };
+        shift_lane_contents(dm, &before, at, size);
+    }
+
+    /// Take a partition out of a swimlane; the swimlane shrinks and what stood in the
+    /// partitions after it moves back. What stood in the removed partition stays where it is.
+    fn remove_partition(&mut self, id: u64, idx: usize) {
+        if self.diag().and_then(|d| d.shape(id)).map(|s| s.lane_partitions().len() < 2).unwrap_or(true) {
+            return;
+        }
+        self.checkpoint();
+        let Some(dm) = self.diag_mut() else { return };
+        let Some(before) = dm.shape(id).cloned() else { return };
+        if let Some(Some((at, size))) = dm.shape_mut(id).map(|s| s.remove_partition(idx)) {
+            shift_lane_contents(dm, &before, at + size, -size);
+        }
+    }
+
     /// The selected activation bar on screen, with its top and bottom handle points.
     fn bar_handles(&self, d: &Diagram, cam: &Cam) -> Option<(Rect, Pos2, Pos2)> {
         let (lid, depth, ymid) = self.sel_bar?;
@@ -1943,6 +1986,8 @@ impl UmlApp {
             nav_from: crate::model::NAV_TRUE,
             nav_to: crate::model::NAV_TRUE,
             seq_no: String::new(),
+            from_label_offset: (0.0, 0.0),
+            to_label_offset: (0.0, 0.0),
             label_offset: (0.0, 0.0),
             from_anchor: None,
             to_anchor: None,
@@ -2712,6 +2757,12 @@ impl UmlApp {
         } else {
             0
         }
+    }
+
+    /// Whether a shape that isn't a container (an action, a node, a note...) is under a screen
+    /// point: a swimlane's or fragment's own lines and headers are only reachable where none is.
+    fn over_plain_shape(d: &Diagram, cam: &Cam, p: Pos2) -> bool {
+        d.shapes.iter().any(|s| !s.kind.is_container() && Self::shape_hit(cam, s, p) == 2)
     }
 
     fn hit_shape(&self, d: &Diagram, cam: &Cam, p: Pos2, allow_weak: bool) -> Option<u64> {
@@ -4012,6 +4063,50 @@ impl UmlApp {
                 field_changed = Some(5);
             }
         }
+        if s.kind.is_swimlane() {
+            // the partitions, in order: rename, remove, add
+            ui.add_space(6.0);
+            ui.label(tr(lang, "Partitions"));
+            let mut v = s.lane_partitions();
+            let n = v.len();
+            let mut remove: Option<usize> = None;
+            let mut add = false;
+            let mut typed = false;
+            for (i, p) in v.iter_mut().enumerate() {
+                ui.horizontal(|ui| {
+                    ui.label(format!("{}", i + 1));
+                    if ui.add(egui::TextEdit::singleline(&mut p.name).desired_width(160.0).hint_text(tr(lang, "Partition name"))).changed() {
+                        typed = true;
+                    }
+                    if ui.add_enabled(n > 1, egui::Button::new("×").small()).on_hover_text(tr(lang, "Remove Partition")).clicked() {
+                        remove = Some(i);
+                    }
+                });
+            }
+            if ui.button(tr(lang, "Add Partition")).clicked() {
+                add = true;
+            }
+            ui.weak(tr(lang, "Drag the line between two partitions to change their sizes; double-click a partition's header to rename it."));
+            if typed {
+                let was_old = s.partitions.is_none();
+                s.normalize_partitions();
+                if let Some(cur) = s.partitions.as_mut() {
+                    for (c, p) in cur.iter_mut().zip(v.iter()) {
+                        c.name = p.name.clone();
+                    }
+                }
+                let _ = was_old;
+                field_changed = Some(17);
+            }
+            if let Some(i) = remove {
+                self.remove_partition(s.id, i);
+                return;
+            }
+            if add {
+                self.add_partition(s.id, n.saturating_sub(1));
+                return;
+            }
+        }
         if s.kind == ShapeKind::AltFragment {
             // the guard of each section below the first (whose guard is the name)
             ui.add_space(6.0);
@@ -4217,6 +4312,11 @@ impl UmlApp {
             c.label_offset = (0.0, 0.0);
             changed = Some(10);
         }
+        if (c.from_label_offset != (0.0, 0.0) || c.to_label_offset != (0.0, 0.0)) && ui.button(tr(lang, "Reset End Label Positions")).clicked() {
+            c.from_label_offset = (0.0, 0.0);
+            c.to_label_offset = (0.0, 0.0);
+            changed = Some(11);
+        }
         ui.add_space(6.0);
         ui.label(tr(lang, "Documentation"));
         if ui.add(egui::TextEdit::multiline(&mut c.documentation).desired_rows(4).desired_width(f32::INFINITY)).changed() {
@@ -4231,6 +4331,7 @@ impl UmlApp {
             std::mem::swap(&mut c.arrow_start, &mut c.arrow_end);
             c.points.reverse();
             std::mem::swap(&mut c.from_label, &mut c.to_label);
+            std::mem::swap(&mut c.from_label_offset, &mut c.to_label_offset);
             self.checkpoint();
             if let Some(dm) = self.diag_mut() {
                 if let Some(t) = dm.conn_mut(c.id) {
@@ -4419,8 +4520,11 @@ impl UmlApp {
             let Some(a) = d.shape(c.from) else { continue };
             let b = d.shape(c.to).unwrap_or(a);
             let h = hops.get(&c.id).map(|v| v.as_slice()).unwrap_or(&[]);
-            if let Some(r) = render::draw_connector(&painter, &cam, d.kind, c, a, b, &look, &opts, lay.numbers.get(&c.id).map(|s| s.as_str()), path, h, self.sel_conns.contains(&c.id)) {
-                self.label_rects.push((LabelTarget::Conn(c.id), r));
+            let [name, from, to] = render::draw_connector(&painter, &cam, d.kind, c, a, b, &look, &opts, lay.numbers.get(&c.id).map(|s| s.as_str()), path, h, self.sel_conns.contains(&c.id));
+            for (t, r) in [(LabelTarget::Conn(c.id), name), (LabelTarget::ConnFrom(c.id), from), (LabelTarget::ConnTo(c.id), to)] {
+                if let Some(r) = r {
+                    self.label_rects.push((t, r));
+                }
             }
         }
         for s in &d.shapes {
@@ -4553,6 +4657,23 @@ impl UmlApp {
                             handled = true;
                         }
                     }
+                    // the line between two partitions of a swimlane (not over a shape on it)?
+                    if !handled && !Self::over_plain_shape(d, cam, origin) {
+                        if let Some((id, idx)) = partition_edge_at(d, cam, origin) {
+                            self.checkpoint();
+                            let mut vertical = true;
+                            let mut orig = vec![];
+                            if let Some(s) = self.diag_mut().and_then(|dm| dm.shape_mut(id)) {
+                                s.normalize_partitions();
+                                vertical = s.kind == ShapeKind::VerticalSwimlane;
+                                orig = s.lane_partitions().iter().map(|p| p.size).collect();
+                            }
+                            self.clear_selection();
+                            self.sel_shapes.push(id);
+                            self.drag = Drag::PartEdge { id, idx, vertical, orig };
+                            handled = true;
+                        }
+                    }
                     // the top or bottom handle of the selected activation?
                     if let Some((r, top, bottom)) = self.bar_handles(d, cam) {
                         let pick = if (origin - top).length() < 8.0 { Some(true) } else if (origin - bottom).length() < 8.0 { Some(false) } else { None };
@@ -4617,6 +4738,8 @@ impl UmlApp {
                         if let Some(t) = self.label_at(origin) {
                             let orig = match t {
                                 LabelTarget::Conn(id) => d.connectors.iter().find(|c| c.id == id).map(|c| c.label_offset),
+                                LabelTarget::ConnFrom(id) => d.connectors.iter().find(|c| c.id == id).map(|c| c.from_label_offset),
+                                LabelTarget::ConnTo(id) => d.connectors.iter().find(|c| c.id == id).map(|c| c.to_label_offset),
                                 LabelTarget::Shape(id) => d.shape(id).map(|s| s.label_offset),
                             };
                             if let Some(orig) = orig {
@@ -4737,6 +4860,7 @@ impl UmlApp {
                 let mut line_move: Option<(u64, (f32, f32), (f32, f32), Vec<(f32, f32)>)> = None;
                 let mut bar_edit: Option<(u64, usize, bool, f32, f32, Vec<f32>, Vec<[f32; 3]>, f32)> = None;
                 let mut divider: Option<(u64, usize, f32)> = None;
+                let mut part_edge: Option<(u64, usize, bool, (f32, f32))> = None;
                 let locked: std::collections::HashSet<u64> = if matches!(self.drag, Drag::Move { .. }) { d.shapes.iter().filter(|s| y_locked(&d, s)).map(|s| s.id).collect() } else { Default::default() };
                 match &mut self.drag {
                     Drag::Move { start, items, lines } => {
@@ -4795,6 +4919,7 @@ impl UmlApp {
                     Drag::MoveMessage { id, orig, start } => msg = Some((*id, *orig + dp.1 - *start)),
                     Drag::BarEdge { lifeline, depth, top, y0, y1, splits0, spans0 } => bar_edit = Some((*lifeline, *depth, *top, *y0, *y1, splits0.clone(), spans0.clone(), snapv(dp.1))),
                     Drag::Divider { id, idx, .. } => divider = Some((*id, *idx, snapv(dp.1))),
+                    Drag::PartEdge { id, idx, vertical, .. } => part_edge = Some((*id, *idx, *vertical, (snapv(dp.0), snapv(dp.1)))),
                     Drag::None => {}
                 }
                 // keep the bar selected by its edge that doesn't move
@@ -4822,6 +4947,12 @@ impl UmlApp {
                             s.y = y;
                             s.w = w;
                             s.h = h;
+                        }
+                    }
+                    if let Some((id, idx, vertical, (px, py))) = part_edge {
+                        if let Some(s) = dm.shape_mut(id) {
+                            let along = if vertical { px - s.x } else { py - s.y };
+                            s.set_partition_edge(idx, along);
                         }
                     }
                     if let Some((id, idx, ny)) = divider {
@@ -4898,6 +5029,16 @@ impl UmlApp {
                                 s.label_offset = off;
                             }
                         }
+                        Some((LabelTarget::ConnFrom(id), off)) => {
+                            if let Some(c) = dm.conn_mut(id) {
+                                c.from_label_offset = off;
+                            }
+                        }
+                        Some((LabelTarget::ConnTo(id), off)) => {
+                            if let Some(c) = dm.conn_mut(id) {
+                                c.to_label_offset = off;
+                            }
+                        }
                         None => {}
                     }
                     if let Some((id, idx, p)) = point {
@@ -4960,6 +5101,12 @@ impl UmlApp {
                                 }
                             }
                         }
+                    }
+                }
+                Drag::PartEdge { id, orig, .. } => {
+                    let now: Vec<f32> = self.diag().and_then(|dm| dm.shape(id)).map(|s| s.lane_partitions().iter().map(|p| p.size).collect()).unwrap_or_default();
+                    if now == orig {
+                        self.undo.pop();
                     }
                 }
                 Drag::Divider { id, idx, orig } => {
@@ -5043,8 +5190,12 @@ impl UmlApp {
         if resp.secondary_clicked() {
             self.seq_menu = None;
             self.alt_menu = None;
+            self.lane_menu = None;
             if let Some(p) = pointer {
                 let (x, y) = cam.to_diagram(p);
+                if !Self::over_plain_shape(&d, cam, p) {
+                    self.lane_menu = d.shapes.iter().rev().find(|s| s.kind.is_swimlane() && x >= s.x && x <= s.x + s.w && y >= s.y && y <= s.y + s.h).map(|s| (s.id, if s.kind == ShapeKind::VerticalSwimlane { x - s.x } else { y - s.y }));
+                }
                 self.alt_menu = d.shapes.iter().rev().find(|s| s.kind == ShapeKind::AltFragment && x >= s.x && x <= s.x + s.w && y >= s.y && y <= s.y + s.h).map(|s| (s.id, y - s.y));
             }
             if let Some(p) = pointer {
@@ -5087,6 +5238,7 @@ impl UmlApp {
             Drag::Move { .. } | Drag::MoveMessage { .. } | Drag::MoveLine { .. } => Some(C::Move),
             Drag::Connect { .. } => Some(C::Crosshair),
             Drag::BarEdge { .. } | Drag::Divider { .. } => Some(C::ResizeVertical),
+            Drag::PartEdge { vertical, .. } => Some(if *vertical { C::ResizeHorizontal } else { C::ResizeVertical }),
             _ => None,
         };
         let icon = dragging.or_else(|| {
@@ -5101,6 +5253,12 @@ impl UmlApp {
             }
             if self.tool == Tool::Select && divider_at(d, cam, p).is_some() {
                 return Some(C::ResizeVertical);
+            }
+            if self.tool == Tool::Select && !Self::over_plain_shape(d, cam, p) {
+                if let Some((id, _)) = partition_edge_at(d, cam, p) {
+                    let vertical = d.shape(id).map(|s| s.kind == ShapeKind::VerticalSwimlane).unwrap_or(true);
+                    return Some(if vertical { C::ResizeHorizontal } else { C::ResizeVertical });
+                }
             }
             if self.sel_shapes.len() == 1 {
                 if let Some(s) = d.shape(self.sel_shapes[0]) {
@@ -5129,6 +5287,19 @@ impl UmlApp {
     }
 
     fn canvas_menu(&mut self, ui: &mut egui::Ui) {
+        // a swimlane: add a partition after the one under the pointer, or take that one away
+        if let Some((id, along)) = self.lane_menu {
+            let (idx, count) = self.diag().and_then(|d| d.shape(id)).map(|s| (s.partition_at(along), s.lane_partitions().len())).unwrap_or((0, 0));
+            if self.menu_item(ui, "Add Partition", None, true) {
+                self.add_partition(id, idx);
+                self.lane_menu = None;
+            }
+            if self.menu_item(ui, "Remove Partition", None, count > 1) {
+                self.remove_partition(id, idx);
+                self.lane_menu = None;
+            }
+            ui.separator();
+        }
         // an alternative fragment: add an else section, or take the one under the pointer away
         if let Some((id, at)) = self.alt_menu {
             let count = self.diag().and_then(|d| d.shape(id)).map(|s| s.alt_dividers().len()).unwrap_or(0);
@@ -5274,7 +5445,7 @@ impl UmlApp {
             EditTarget::Conn(id) => d.connectors.iter().find(|c| c.id == id).map(|c| c.name.clone()),
         };
         if let Some(text) = text {
-            self.editing = Some(InlineEdit { target: t, text, focus: true, line: None, new_line: false });
+            self.editing = Some(InlineEdit { target: t, text, focus: true, line: None, new_line: false, part: None });
         }
     }
 
@@ -5326,7 +5497,7 @@ impl UmlApp {
         };
         self.clear_selection();
         self.sel_shapes.push(id);
-        self.editing = Some(InlineEdit { target: EditTarget::Shape(id), text, focus: true, line: Some((ops, idx)), new_line });
+        self.editing = Some(InlineEdit { target: EditTarget::Shape(id), text, focus: true, line: Some((ops, idx)), new_line, part: None });
     }
 
     fn double_click(&mut self, cam: &Cam, d: &Diagram, p: Pos2) {
@@ -5360,6 +5531,19 @@ impl UmlApp {
                             cm.points.remove(i);
                         }
                     }
+                    return;
+                }
+            }
+        }
+        // a partition's header: rename that partition
+        if self.label_at(p).is_none() && !Self::over_plain_shape(d, cam, p) {
+            let (x, y) = cam.to_diagram(p);
+            for s in d.shapes.iter().rev().filter(|s| s.kind.is_swimlane()) {
+                let parts = s.lane_partitions();
+                if let Some(i) = (0..parts.len()).find(|&i| s.partition_header(i).map(|(hx, hy, hw, hh)| x >= hx && x <= hx + hw && y >= hy && y <= hy + hh).unwrap_or(false)) {
+                    self.clear_selection();
+                    self.sel_shapes.push(s.id);
+                    self.editing = Some(InlineEdit { target: EditTarget::Shape(s.id), text: parts[i].name.clone(), focus: true, line: None, new_line: false, part: Some(i) });
                     return;
                 }
             }
@@ -5401,6 +5585,20 @@ impl UmlApp {
             }
             if ed.new_line && text.is_empty() {
                 self.undo.pop();
+            }
+            return;
+        }
+        if let (EditTarget::Shape(id), Some(i)) = (ed.target, ed.part) {
+            let current = self.diag().and_then(|d| d.shape(id)).and_then(|s| s.lane_partitions().get(i).map(|p| p.name.clone()));
+            if current.is_none() || current.as_deref() == Some(ed.text.as_str()) {
+                return;
+            }
+            self.checkpoint();
+            if let Some(s) = self.diag_mut().and_then(|d| d.shape_mut(id)) {
+                s.normalize_partitions();
+                if let Some(p) = s.partitions.as_mut().and_then(|v| v.get_mut(i)) {
+                    p.name = ed.text;
+                }
             }
             return;
         }
@@ -5447,6 +5645,7 @@ impl UmlApp {
         let Some(ed) = self.editing.as_ref() else { return };
         let target = ed.target;
         let line = ed.line;
+        let part = ed.part;
         let opts = self.project.as_ref().map(|p| p.options.clone()).unwrap_or_default();
         let look = self.look();
         let ds = opts.connector_style;
@@ -5455,7 +5654,17 @@ impl UmlApp {
             return;
         };
         // (position, width, multiline, left aligned)
-        let placed = match (target, line) {
+        let part_place = match (target, part) {
+            (EditTarget::Shape(id), Some(i)) => Some(d.shape(id).and_then(|s| {
+                let (x, y, w, _) = s.partition_header(i)?;
+                let a = cam.pt(x, y);
+                let sw = w * cam.zoom;
+                let ww = sw.clamp(100.0, 300.0);
+                Some((Pos2::new(a.x + sw / 2.0 - ww / 2.0, a.y + 2.0), ww, false, false))
+            })),
+            _ => None,
+        };
+        let placed = if let Some(p) = part_place { p } else { match (target, line) {
             (EditTarget::Shape(id), Some((ops, idx))) => d.shape(id).and_then(|s| {
                 let c = render::compartments(s, &opts, &look)?;
                 let (y0, _) = if ops { c.ops? } else { c.attr? };
@@ -5481,7 +5690,7 @@ impl UmlApp {
                 let mid = cam.pt((p0.0 + p1.0) / 2.0, (p0.1 + p1.1) / 2.0);
                 Some((mid - Vec2::new(80.0, 26.0), 160.0, false, false))
             }),
-        };
+        } };
         let Some((pos, width, multiline, left)) = placed else {
             self.editing = None;
             return;
@@ -6451,6 +6660,56 @@ impl UmlApp {
                     self.sel_shapes.push(id);
                 }
             }
+            // for checking swimlanes: NAPKINUML_LANE=<cmd>;... on the first swimlane, each cmd
+            // add@<along>, remove@<along>, edge:<i>:<along> or rename:<i>:<text> (along = distance
+            // along the swimlane in diagram units, as the menu and the drag use)
+            if let Ok(v) = std::env::var("NAPKINUML_LANE") {
+                let lane = self.diag().and_then(|d| d.shapes.iter().find(|s| s.kind.is_swimlane()).map(|s| s.id));
+                if let Some(id) = lane {
+                    for cmd in v.split(';') {
+                        let idx_at = |along: &str| self.diag().and_then(|d| d.shape(id)).map(|s| s.partition_at(along.parse().unwrap_or(0.0))).unwrap_or(0);
+                        if let Some(a) = cmd.strip_prefix("add@") {
+                            let i = idx_at(a);
+                            self.add_partition(id, i);
+                        } else if let Some(a) = cmd.strip_prefix("remove@") {
+                            let i = idx_at(a);
+                            self.remove_partition(id, i);
+                        } else {
+                            let parts: Vec<&str> = cmd.splitn(3, ':').collect();
+                            match parts.as_slice() {
+                                ["edge", i, a] => {
+                                    self.checkpoint();
+                                    if let (Ok(i), Ok(a), Some(s)) = (i.parse::<usize>(), a.parse::<f32>(), self.diag_mut().and_then(|dm| dm.shape_mut(id))) {
+                                        s.set_partition_edge(i, a);
+                                    }
+                                }
+                                ["rename", i, t] => {
+                                    if let Ok(i) = i.parse::<usize>() {
+                                        self.editing = Some(InlineEdit { target: EditTarget::Shape(id), text: t.to_string(), focus: false, line: None, new_line: false, part: Some(i) });
+                                        self.commit_edit();
+                                    }
+                                }
+                                _ => {}
+                            }
+                        }
+                    }
+                    self.clear_selection();
+                    self.sel_shapes.push(id);
+                }
+            }
+            // for checking end labels: NAPKINUML_END_LABELS=<line index>,<source>,<target>,<sdx>,<sdy>,<tdx>,<tdy>
+            if let Ok(v) = std::env::var("NAPKINUML_END_LABELS") {
+                let p: Vec<&str> = v.split(',').collect();
+                let num = |i: usize| p.get(i).and_then(|s| s.parse::<f32>().ok()).unwrap_or(0.0);
+                if let (Some(i), Some(dm)) = (p.first().and_then(|s| s.parse::<usize>().ok()), self.diag_mut()) {
+                    if let Some(c) = dm.connectors.get_mut(i) {
+                        c.from_label = p.get(1).unwrap_or(&"").to_string();
+                        c.to_label = p.get(2).unwrap_or(&"").to_string();
+                        c.from_label_offset = (num(3), num(4));
+                        c.to_label_offset = (num(5), num(6));
+                    }
+                }
+            }
             if let Ok(v) = std::env::var("NAPKINUML_SPLIT_AT") {
                 let n: Vec<f32> = v.split(',').filter_map(|p| p.parse().ok()).collect();
                 let opts = self.project.as_ref().map(|p| p.options.clone()).unwrap_or_default();
@@ -6522,6 +6781,55 @@ fn set_divider(s: &mut Shape, idx: usize, ny: f32) {
         let hi = if idx + 1 < v.len() { v[idx + 1].y - 20.0 } else { s.h - 10.0 };
         v[idx].y = (ny - s.y).clamp(lo, hi.max(lo));
         s.dividers = Some(v);
+    }
+}
+
+/// The line between two partitions of a swimlane under a screen point: (swimlane, index of the
+/// partition before the line).
+fn partition_edge_at(d: &Diagram, cam: &Cam, p: Pos2) -> Option<(u64, usize)> {
+    for s in d.shapes.iter().rev().filter(|s| s.kind.is_swimlane()) {
+        let r = cam.rect(s);
+        if !r.expand(3.0).contains(p) {
+            continue;
+        }
+        let vertical = s.kind == ShapeKind::VerticalSwimlane;
+        for (i, (at, _)) in s.partition_spans().iter().enumerate().skip(1) {
+            let hit = if vertical { (cam.pt(s.x + at, 0.0).x - p.x).abs() <= 5.0 } else { (cam.pt(0.0, s.y + at).y - p.y).abs() <= 5.0 };
+            if hit {
+                return Some((s.id, i - 1));
+            }
+        }
+    }
+    None
+}
+
+/// Move what stands inside a swimlane (as it was before a change) beyond a distance along it
+/// by `delta`: shapes whose middle is past it and bend points past it.
+fn shift_lane_contents(dm: &mut Diagram, lane: &Shape, from: f32, delta: f32) {
+    let vertical = lane.kind != ShapeKind::HorizontalSwimlane;
+    let cut = if vertical { lane.x + from } else { lane.y + from };
+    let inside = |x: f32, y: f32| x >= lane.x && x <= lane.x + lane.w && y >= lane.y && y <= lane.y + lane.h;
+    let beyond = |x: f32, y: f32| if vertical { x >= cut } else { y >= cut };
+    for s in dm.shapes.iter_mut().filter(|s| s.id != lane.id && !s.kind.is_swimlane()) {
+        let (cx, cy) = s.center();
+        if inside(cx, cy) && beyond(cx, cy) {
+            if vertical {
+                s.x += delta;
+            } else {
+                s.y += delta;
+            }
+        }
+    }
+    for c in dm.connectors.iter_mut() {
+        for q in c.points.iter_mut() {
+            if inside(q.0, q.1) && beyond(q.0, q.1) {
+                if vertical {
+                    q.0 += delta;
+                } else {
+                    q.1 += delta;
+                }
+            }
+        }
     }
 }
 

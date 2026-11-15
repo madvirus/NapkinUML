@@ -183,8 +183,8 @@ impl ShapeKind {
             ObjectNode => (120.0, 46.0),
             SendSignal | AcceptEvent => (130.0, 46.0),
             AcceptTimeEvent => (28.0, 34.0),
-            VerticalSwimlane => (220.0, 420.0),
-            HorizontalSwimlane => (520.0, 160.0),
+            VerticalSwimlane => (440.0, 420.0),
+            HorizontalSwimlane => (520.0, 320.0),
             Entity | DbView => (170.0, 90.0),
             Router => (60.0, 44.0),
             Switch => (70.0, 34.0),
@@ -223,6 +223,10 @@ impl ShapeKind {
                 | HorizontalSwimlane
                 | NetworkZone
         )
+    }
+
+    pub fn is_swimlane(self) -> bool {
+        matches!(self, ShapeKind::VerticalSwimlane | ShapeKind::HorizontalSwimlane)
     }
 
     /// Network device pictures (name drawn below them).
@@ -478,6 +482,11 @@ pub struct Shape {
     /// [else] section from halfway down (files from before sections could be changed).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub dividers: Option<Vec<Divider>>,
+    /// Swimlanes: the partitions side by side (left to right, or top to bottom), each with its
+    /// width (height) in diagram units; the last one fills what's left. None = a swimlane from
+    /// before partitions, shown as one partition named after the shape.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub partitions: Option<Vec<Partition>>,
     /// Where the name shown beside the shape was dragged to (offset from its usual place).
     #[serde(default)]
     pub label_offset: (f32, f32),
@@ -493,6 +502,20 @@ pub struct Divider {
     pub guard: String,
 }
 
+/// One partition of a swimlane.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+pub struct Partition {
+    #[serde(default)]
+    pub name: String,
+    /// Width (vertical swimlane) or height (horizontal), in diagram units.
+    pub size: f32,
+}
+
+/// Thickness of a swimlane's header strips (its name, and each partition's name).
+pub const LANE_HEAD: f32 = 28.0;
+/// The narrowest a partition gets.
+pub const PART_MIN: f32 = 30.0;
+
 /// Room at the top of an alt fragment for its tab and first guard.
 pub const ALT_HEAD: f32 = 34.0;
 
@@ -503,6 +526,142 @@ impl Shape {
             Some(v) => v.clone(),
             None if self.kind == ShapeKind::AltFragment => vec![Divider { y: self.h / 2.0, guard: "else".into() }],
             None => vec![],
+        }
+    }
+    fn lane_vertical(&self) -> bool {
+        self.kind != ShapeKind::HorizontalSwimlane
+    }
+    /// A swimlane's length across its partitions (width, or height when horizontal).
+    pub fn lane_length(&self) -> f32 {
+        if self.lane_vertical() { self.w } else { self.h }
+    }
+    /// A swimlane's partitions (one named after the shape for swimlanes from before partitions).
+    pub fn lane_partitions(&self) -> Vec<Partition> {
+        match &self.partitions {
+            Some(v) if !v.is_empty() => v.clone(),
+            _ => vec![Partition { name: self.name.clone(), size: self.lane_length() }],
+        }
+    }
+    /// Whether the swimlane shows its own name in a header across its partitions.
+    pub fn lane_titled(&self) -> bool {
+        self.partitions.is_some() && !self.name.trim().is_empty()
+    }
+    /// Each partition's start and length along the swimlane; the last fills the rest.
+    pub fn partition_spans(&self) -> Vec<(f32, f32)> {
+        let parts = self.lane_partitions();
+        let total = self.lane_length().max(0.0);
+        let n = parts.len();
+        let mut out = Vec::new();
+        let mut at = 0.0;
+        for (i, p) in parts.iter().enumerate() {
+            let rest = (total - at).max(0.0);
+            let len = if i + 1 == n {
+                rest
+            } else {
+                let lo = PART_MIN.min(rest);
+                let hi = (rest - (n - i - 1) as f32 * PART_MIN).max(lo);
+                p.size.clamp(lo, hi)
+            };
+            out.push((at, len));
+            at += len;
+        }
+        out
+    }
+    /// The header strip of partition `i` (x, y, w, h in diagram units).
+    pub fn partition_header(&self, i: usize) -> Option<(f32, f32, f32, f32)> {
+        let (at, len) = *self.partition_spans().get(i)?;
+        let head0 = if self.lane_titled() { LANE_HEAD } else { 0.0 };
+        Some(if self.lane_vertical() {
+            (self.x + at, self.y + head0, len, LANE_HEAD.min((self.h - head0).max(0.0)))
+        } else {
+            (self.x + head0, self.y + at, LANE_HEAD.min((self.w - head0).max(0.0)), len)
+        })
+    }
+    /// The header strip with the swimlane's own name, when it has one.
+    pub fn lane_title_rect(&self) -> Option<(f32, f32, f32, f32)> {
+        if !self.lane_titled() {
+            return None;
+        }
+        Some(if self.lane_vertical() { (self.x, self.y, self.w, LANE_HEAD.min(self.h)) } else { (self.x, self.y, LANE_HEAD.min(self.w), self.h) })
+    }
+    /// The partition at a distance along the swimlane.
+    pub fn partition_at(&self, along: f32) -> usize {
+        let spans = self.partition_spans();
+        spans.iter().rposition(|(at, _)| *at <= along).unwrap_or(0)
+    }
+    /// Give a swimlane from before partitions its partition list (its name becomes the
+    /// partition's) and make every size the one shown.
+    pub fn normalize_partitions(&mut self) {
+        if !self.kind.is_swimlane() {
+            return;
+        }
+        let mut v = self.lane_partitions();
+        if self.partitions.is_none() {
+            self.name.clear();
+        }
+        for (p, (_, len)) in v.iter_mut().zip(self.partition_spans()) {
+            p.size = len;
+        }
+        self.partitions = Some(v);
+    }
+    /// Insert a partition after partition `after` (the swimlane grows by its size). Returns
+    /// where it starts along the swimlane and its size.
+    pub fn add_partition(&mut self, after: usize) -> (f32, f32) {
+        self.normalize_partitions();
+        let mut v = self.partitions.clone().unwrap_or_default();
+        let i = after.min(v.len().saturating_sub(1)) + 1;
+        let size = if self.lane_vertical() { 200.0 } else { 150.0 };
+        let mut k = 1;
+        let name = loop {
+            let c = if k == 1 { "Partition".to_string() } else { format!("Partition{k}") };
+            if !v.iter().any(|p| p.name == c) {
+                break c;
+            }
+            k += 1;
+        };
+        let at: f32 = v.iter().take(i).map(|p| p.size).sum();
+        v.insert(i.min(v.len()), Partition { name, size });
+        if self.lane_vertical() {
+            self.w += size;
+        } else {
+            self.h += size;
+        }
+        self.partitions = Some(v);
+        (at, size)
+    }
+    /// Take partition `idx` away (the swimlane shrinks by its size; the last one stays).
+    /// Returns where it started along the swimlane and its size.
+    pub fn remove_partition(&mut self, idx: usize) -> Option<(f32, f32)> {
+        if self.lane_partitions().len() < 2 {
+            return None;
+        }
+        self.normalize_partitions();
+        let mut v = self.partitions.clone().unwrap_or_default();
+        let idx = idx.min(v.len() - 1);
+        let at: f32 = v.iter().take(idx).map(|p| p.size).sum();
+        let size = v.remove(idx).size;
+        if self.lane_vertical() {
+            self.w = (self.w - size).max(PART_MIN);
+        } else {
+            self.h = (self.h - size).max(PART_MIN);
+        }
+        self.partitions = Some(v);
+        Some((at, size))
+    }
+    /// Move the line between partitions `idx` and `idx + 1` to a distance along the
+    /// swimlane; the two partitions share their room (each at least PART_MIN).
+    pub fn set_partition_edge(&mut self, idx: usize, along: f32) {
+        let spans = self.partition_spans();
+        if idx + 1 >= spans.len() {
+            return;
+        }
+        self.normalize_partitions();
+        let start = spans[idx].0;
+        let end = spans[idx + 1].0 + spans[idx + 1].1;
+        let new = (along - start).clamp(PART_MIN, (end - start - PART_MIN).max(PART_MIN));
+        if let Some(v) = self.partitions.as_mut() {
+            v[idx].size = new;
+            v[idx + 1].size = end - start - new;
         }
     }
     pub fn contains_rect(&self, o: &Shape) -> bool {
@@ -561,6 +720,15 @@ pub struct Connector {
     pub from_anchor: Option<(f32, f32)>,
     #[serde(default)]
     pub to_anchor: Option<(f32, f32)>,
+    /// Where the source / target end labels were dragged to (offset from their usual place).
+    #[serde(default, skip_serializing_if = "zero_pair")]
+    pub from_label_offset: (f32, f32),
+    #[serde(default, skip_serializing_if = "zero_pair")]
+    pub to_label_offset: (f32, f32),
+}
+
+fn zero_pair(v: &(f32, f32)) -> bool {
+    *v == (0.0, 0.0)
 }
 
 pub const SEQ_NESTED_LEVEL: u8 = 0;
@@ -913,8 +1081,8 @@ impl Project {
 
         // 7. activity diagram
         let mut b = Builder::new(&mut p, DiagramKind::Activity, "Checkout");
-        b.shape_h(S::VerticalSwimlane, 30.0, 10.0, 270.0, 480.0, "Customer");
-        b.shape_h(S::VerticalSwimlane, 300.0, 10.0, 270.0, 480.0, "Shop");
+        let lane = b.shape_h(S::VerticalSwimlane, 30.0, 10.0, 540.0, 480.0, "");
+        b.partitions(lane, &[("Customer", 270.0), ("Shop", 270.0)]);
         let i = b.shape_h(S::Initial, 153.0, 60.0, 24.0, 24.0, "");
         let choose = b.shape_h(S::Action, 95.0, 110.0, 140.0, 50.0, "Choose Products");
         let enter = b.shape_h(S::Action, 95.0, 200.0, 140.0, 50.0, "Enter Payment");
@@ -1047,6 +1215,7 @@ impl<'a> Builder<'a> {
             splits: Vec::new(),
             act_spans: Vec::new(),
             dividers: None,
+            partitions: None,
             label_offset: (0.0, 0.0),
         });
         id
@@ -1059,6 +1228,12 @@ impl<'a> Builder<'a> {
 
     fn shape_h(&mut self, kind: ShapeKind, x: f32, y: f32, w: f32, h: f32, name: &str) -> u64 {
         self.push(kind, x, y, w, h, name, &[], &[])
+    }
+
+    fn partitions(&mut self, id: u64, parts: &[(&str, f32)]) {
+        if let Some(s) = self.p.diagram_mut(self.did).unwrap().shape_mut(id) {
+            s.partitions = Some(parts.iter().map(|(n, w)| Partition { name: n.to_string(), size: *w }).collect());
+        }
     }
 
     fn conn(&mut self, kind: ConnKind, from: u64, to: u64, name: &str, fl: &str, tl: &str) {
@@ -1107,6 +1282,8 @@ impl<'a> Builder<'a> {
             nav_from: NAV_TRUE,
             nav_to: NAV_TRUE,
             seq_no: String::new(),
+            from_label_offset: (0.0, 0.0),
+            to_label_offset: (0.0, 0.0),
             label_offset: (0.0, 0.0),
             from_anchor: None,
             to_anchor: None,

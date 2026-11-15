@@ -952,23 +952,42 @@ pub fn draw_shape(painter: &Painter, cam: &Cam, shape: &Shape, look: &Look, opts
             painter.add(epaint::Shape::closed_line(pts, stroke));
             name_below(painter);
         }
-        VerticalSwimlane => {
+        VerticalSwimlane | HorizontalSwimlane => {
+            // one swimlane: an optional header with its name, then its partitions side by side,
+            // each with a header naming it and a line between neighbours
+            let vertical = shape.kind == VerticalSwimlane;
             painter.rect(r, 0.0, fill, stroke, StrokeKind::Middle);
-            let hh = 28.0 * z;
-            let hr = Rect::from_min_size(r.min, Vec2::new(r.width(), hh.min(r.height())));
-            painter.rect(hr, 0.0, look.header_fill(), stroke, StrokeKind::Middle);
-            text_at(painter, look, hr.center(), Align2::CENTER_CENTER, &shape.name, f.clone(), tc);
-        }
-        HorizontalSwimlane => {
-            painter.rect(r, 0.0, fill, stroke, StrokeKind::Middle);
-            let hw = 28.0 * z;
-            let hr = Rect::from_min_size(r.min, Vec2::new(hw.min(r.width()), r.height()));
-            painter.rect(hr, 0.0, look.header_fill(), stroke, StrokeKind::Middle);
-            if !look.icon && !shape.name.is_empty() {
-                let galley = painter.layout_no_wrap(shape.name.clone(), f.clone(), tc);
-                let sz = galley.size();
-                let pos = Pos2::new(hr.center().x - sz.y / 2.0, hr.center().y + sz.x / 2.0);
-                painter.add(epaint::TextShape::new(pos, galley, tc).with_angle(-PI / 2.0));
+            let to_rect = |(x, y, w, h): (f32, f32, f32, f32)| Rect::from_two_pos(cam.pt(x, y), cam.pt(x + w, y + h));
+            let label = |hr: Rect, text: &str| {
+                if text.is_empty() || look.icon {
+                    return;
+                }
+                if vertical {
+                    text_at(painter, look, hr.center(), Align2::CENTER_CENTER, text, f.clone(), tc);
+                } else {
+                    let galley = painter.layout_no_wrap(text.to_string(), f.clone(), tc);
+                    let sz = galley.size();
+                    let pos = Pos2::new(hr.center().x - sz.y / 2.0, hr.center().y + sz.x / 2.0);
+                    painter.add(epaint::TextShape::new(pos, galley, tc).with_angle(-PI / 2.0));
+                }
+            };
+            if let Some(t) = shape.lane_title_rect() {
+                let hr = to_rect(t);
+                painter.rect(hr, 0.0, look.header_fill(), stroke, StrokeKind::Middle);
+                label(hr, &shape.name);
+            }
+            let head0 = if shape.lane_titled() { crate::model::LANE_HEAD * z } else { 0.0 };
+            for (i, (p, (at, _))) in shape.lane_partitions().iter().zip(shape.partition_spans()).enumerate() {
+                if let Some(h) = shape.partition_header(i) {
+                    let hr = to_rect(h);
+                    painter.rect(hr, 0.0, look.header_fill(), stroke, StrokeKind::Middle);
+                    label(hr, &p.name);
+                }
+                if i > 0 {
+                    let a = at * z;
+                    let seg = if vertical { [Pos2::new(r.left() + a, r.top() + head0), Pos2::new(r.left() + a, r.bottom())] } else { [Pos2::new(r.left() + head0, r.top() + a), Pos2::new(r.right(), r.top() + a)] };
+                    painter.line_segment(seg, stroke);
+                }
             }
         }
     }
@@ -1332,10 +1351,10 @@ pub fn draw_connector(
     path_d: &[(f32, f32)],
     hops: &[(usize, f32)],
     selected: bool,
-) -> Option<Rect> {
+) -> [Option<Rect>; 3] {
     let path: Vec<Pos2> = path_d.iter().map(|(x, y)| cam.pt(*x, *y)).collect();
     if path.len() < 2 {
-        return None;
+        return [None; 3];
     }
     let z = cam.zoom;
     let color = if selected { look.accent() } else { look.line() };
@@ -1365,7 +1384,7 @@ pub fn draw_connector(
     arrow_end(painter, path[0], start_dir, start_kind, solid, look, z, opts.erd_notation);
 
     if look.icon {
-        return None;
+        return [None; 3];
     }
     // labels
     let f = font_id(look, look.text_size * 0.95 * z);
@@ -1411,20 +1430,27 @@ pub fn draw_connector(
         }
         label_rect = Some(r.expand(2.0));
     }
+    let mut ends = [None, None];
     if opts.show_multiplicity {
-        let place = |painter: &Painter, at: Pos2, toward: Vec2, text: &str| {
+        // the source / target labels sit beside their end, or where they were dragged to
+        let place = |painter: &Painter, at: Pos2, toward: Vec2, text: &str, off: (f32, f32)| -> Option<Rect> {
             if text.is_empty() {
-                return;
+                return None;
             }
             let d = toward.normalized();
             let nrm = Vec2::new(-d.y, d.x);
-            let p = at + d * 16.0 * z + nrm * 10.0 * z;
-            painter.text(p, Align2::CENTER_CENTER, text, f.clone(), tc);
+            let home = at + d * 16.0 * z + nrm * 10.0 * z;
+            let off = Vec2::new(off.0, off.1) * z;
+            let r = painter.text(home + off, Align2::CENTER_CENTER, text, f.clone(), tc);
+            if off.length() > 24.0 * z {
+                dashed(painter, &[r.center(), at], Stroke::new(0.6_f32, look.line().linear_multiply(0.45)), 0.5);
+            }
+            Some(r.expand(2.0))
         };
-        place(painter, path[0], path[1] - path[0], &c.from_label);
-        place(painter, path[n - 1], path[n - 2] - path[n - 1], &c.to_label);
+        ends[0] = place(painter, path[0], path[1] - path[0], &c.from_label, c.from_label_offset);
+        ends[1] = place(painter, path[n - 1], path[n - 2] - path[n - 1], &c.to_label, c.to_label_offset);
     }
-    label_rect
+    [label_rect, ends[0], ends[1]]
 }
 
 /// Radius of the arc a line draws to jump over another line (screen px at 100%).
@@ -1692,6 +1718,7 @@ pub fn draw_icon(painter: &Painter, rect: Rect, tool: Tool, look: &Look, opts: &
                 splits: Vec::new(),
                 act_spans: Vec::new(),
                 dividers: None,
+                partitions: None,
                 label_offset: (0.0, 0.0),
             };
             if kind == ShapeKind::Constraint {
