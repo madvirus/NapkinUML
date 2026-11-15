@@ -4573,11 +4573,22 @@ impl UmlApp {
                 let r = Rect::from_two_pos(*start, *cur);
                 painter.rect(r, 0.0, look.accent().linear_multiply(0.08), Stroke::new(1.0_f32, look.accent()), StrokeKind::Middle);
             }
-            Drag::Connect { from, cur, .. } => {
+            Drag::Connect { from, cur, start: press } => {
                 if let Some(s) = d.shape(*from) {
                     let r = cam.rect(s);
-                    let start = if d.kind == DiagramKind::Sequence && s.kind.is_lifeline() { Pos2::new(r.center().x, cur.y) } else { r.center() };
-                    painter.line_segment([start, *cur], Stroke::new(1.5_f32, look.accent()));
+                    let seq_msg = d.kind == DiagramKind::Sequence && s.kind.is_lifeline() && matches!(self.tool, Tool::Conn(ConnKind::Message | ConnKind::AsyncMessage));
+                    let over_other = self.hit_shape(&d, &cam, *cur, true).map(|id| id != *from && d.shape(id).map(|o| o.kind.is_lifeline()).unwrap_or(false)).unwrap_or(false);
+                    if seq_msg && !over_other && (cur.x - r.center().x).abs() < SELF_REACH * cam.zoom {
+                        // back near its own lifeline: it will be a self message
+                        let y = cam.pt(0.0, press.1).y;
+                        let out = r.center().x + 40.0 * cam.zoom;
+                        let drop = crate::seq::SELF_DROP * cam.zoom;
+                        let pts = vec![Pos2::new(r.center().x, y), Pos2::new(out, y), Pos2::new(out, y + drop), Pos2::new(r.center().x, y + drop)];
+                        painter.add(egui::Shape::line(pts, Stroke::new(1.5_f32, look.accent())));
+                    } else {
+                        let start = if d.kind == DiagramKind::Sequence && s.kind.is_lifeline() { Pos2::new(r.center().x, cur.y) } else { r.center() };
+                        painter.line_segment([start, *cur], Stroke::new(1.5_f32, look.accent()));
+                    }
                 }
             }
             _ => {}
@@ -5074,13 +5085,19 @@ impl UmlApp {
                             if let Some(EditTarget::Shape(to) | EditTarget::Conn(to)) = self.hit_any(cam, cur) {
                                 self.create_anchor(from, to);
                             }
-                        } else if self.hit_shape(d, cam, cur, true).is_none() && d.kind == DiagramKind::Sequence && matches!(kind, ConnKind::Message | ConnKind::AsyncMessage | ConnKind::CreateMessage) {
-                            // nothing where the message was dropped: a new lifeline goes there
+                        } else if let (true, Some(src)) = (d.kind == DiagramKind::Sequence && matches!(kind, ConnKind::Message | ConnKind::AsyncMessage | ConnKind::CreateMessage), d.shape(from).filter(|s| s.kind.is_lifeline())) {
+                            // a sequence message: to another lifeline; back onto (or near) its own
+                            // lifeline = a self message; onto empty space = a new lifeline there.
+                            // Fragments it is dropped inside don't count.
                             let x = cam.to_diagram(cur).0;
-                            if let Some(src) = d.shape(from).filter(|s| s.kind.is_lifeline()) {
-                                if (x - (src.x + src.w / 2.0)).abs() >= 50.0 {
-                                    self.message_to_new_lifeline(kind, from, x, start.1);
-                                }
+                            let target = self.hit_shape(d, cam, cur, true).filter(|id| d.shape(*id).map(|s| !s.kind.is_container()).unwrap_or(false));
+                            let near_self = (x - (src.x + src.w / 2.0)).abs() < SELF_REACH;
+                            match target {
+                                Some(to) if to != from => self.create_connector(kind, from, to, start.1),
+                                Some(_) if kind != ConnKind::CreateMessage => self.create_connector(kind, from, from, start.1),
+                                None if near_self && kind != ConnKind::CreateMessage => self.create_connector(kind, from, from, start.1),
+                                None if !near_self => self.message_to_new_lifeline(kind, from, x, start.1),
+                                _ => {}
                             }
                         } else if let Some(to) = self.hit_shape(d, cam, cur, true) {
                             let before = self.diag().map(|dm| dm.connectors.len()).unwrap_or(0);
@@ -5154,7 +5171,16 @@ impl UmlApp {
                         let (x, y) = cam.to_diagram(p);
                         self.create_shape(kind, x, y);
                     }
-                    Tool::Conn(_) => {}
+                    Tool::Conn(kind) => {
+                        // clicking a lifeline with Message or Asynchronous Message draws a self message there
+                        if d.kind == DiagramKind::Sequence && matches!(kind, ConnKind::Message | ConnKind::AsyncMessage) {
+                            let hit = self.hit_shape(d, cam, p, true).filter(|id| d.shape(*id).map(|s| s.kind.is_lifeline()).unwrap_or(false));
+                            if let Some(id) = hit {
+                                self.commit_edit();
+                                self.create_connector(kind, id, id, cam.to_diagram(p).1);
+                            }
+                        }
+                    }
                     Tool::Select if bar_hit => {}
                     Tool::Select => match self.label_at(p).map(|t| t.owner()).or_else(|| self.hit_any(cam, p)) {
                         Some(EditTarget::Shape(id)) => {
@@ -6732,6 +6758,19 @@ impl UmlApp {
                     self.editing = None;
                 }
             }
+            // for checking self messages: NAPKINUML_SELF_MESSAGE=<message|async>,<lifeline number>,<y>;...
+            // adds a self message on that lifeline (1 = first) at height y, as clicking it with the tool does
+            if let Ok(v) = std::env::var("NAPKINUML_SELF_MESSAGE") {
+                for item in v.split(';') {
+                    let parts: Vec<&str> = item.split(',').collect();
+                    let kind = if parts.first() == Some(&"async") { ConnKind::AsyncMessage } else { ConnKind::Message };
+                    let n = parts.get(1).and_then(|p| p.parse::<usize>().ok()).unwrap_or(1).max(1);
+                    let y = parts.get(2).and_then(|p| p.parse::<f32>().ok()).unwrap_or(0.0);
+                    if let Some(id) = self.diag().and_then(|d| d.shapes.iter().filter(|s| s.kind.is_lifeline()).nth(n - 1).map(|s| s.id)) {
+                        self.create_connector(kind, id, id, y);
+                    }
+                }
+            }
             // for checking printing: NAPKINUML_PRINT_PDF=<file.pdf> prints the first three
             // diagrams to that PDF (paper from NAPKINUML_PRINT_PAPER, A4 by default) and saves
             // the page pictures beside it as PNG
@@ -6783,6 +6822,10 @@ fn set_divider(s: &mut Shape, idx: usize, ny: f32) {
         s.dividers = Some(v);
     }
 }
+
+/// How close (diagram units, sideways) to its own lifeline a message must be dropped to become
+/// a self message; farther away on empty space it makes a new lifeline.
+const SELF_REACH: f32 = 50.0;
 
 /// The line between two partitions of a swimlane under a screen point: (swimlane, index of the
 /// partition before the line).

@@ -21,7 +21,7 @@ use std::collections::HashMap;
 /// Half width of an activation bar and the sideways step of a nested one.
 pub const BAR_HALF: f32 = 5.0;
 pub const BAR_STEP: f32 = 6.0;
-const SELF_DROP: f32 = 22.0;
+pub const SELF_DROP: f32 = 22.0;
 const SHORT_BAR: f32 = 24.0;
 
 #[derive(Clone, Debug)]
@@ -53,6 +53,25 @@ struct Building {
 
 fn center_x(s: &Shape) -> f32 {
     s.x + s.w / 2.0
+}
+
+/// How far an outer activation runs below a nested one that would end lower.
+const NEST_PAD: f32 = 6.0;
+
+/// Activations of a lifeline at the same depth that overlap or touch become one.
+fn merge_bars(mut done: Vec<Bar>) -> Vec<Bar> {
+    done.sort_by(|a, b| (a.lifeline, a.depth).cmp(&(b.lifeline, b.depth)).then(a.y0.partial_cmp(&b.y0).unwrap_or(std::cmp::Ordering::Equal)));
+    let mut merged: Vec<Bar> = Vec::with_capacity(done.len());
+    for b in done {
+        if let Some(l) = merged.last_mut() {
+            if l.lifeline == b.lifeline && l.depth == b.depth && b.y0 <= l.y1 + 0.5 {
+                l.y1 = l.y1.max(b.y1);
+                continue;
+            }
+        }
+        merged.push(b);
+    }
+    merged
 }
 
 pub fn layout(d: &Diagram, opts: &ProjectOptions) -> SeqLayout {
@@ -214,18 +233,22 @@ pub fn layout(d: &Diagram, opts: &ProjectOptions) -> SeqLayout {
             done.push(Bar { lifeline: s.id, y0: sp[0].min(sp[1]), y1: sp[0].max(sp[1]), depth: sp[2].max(0.0) as usize });
         }
     }
-    // overlapping (or touching) activations of a lifeline at the same depth become one
-    done.sort_by(|a, b| (a.lifeline, a.depth).cmp(&(b.lifeline, b.depth)).then(a.y0.partial_cmp(&b.y0).unwrap_or(std::cmp::Ordering::Equal)));
-    let mut merged: Vec<Bar> = Vec::with_capacity(done.len());
-    for b in done {
-        if let Some(l) = merged.last_mut() {
-            if l.lifeline == b.lifeline && l.depth == b.depth && b.y0 <= l.y1 + 0.5 {
-                l.y1 = l.y1.max(b.y1);
-                continue;
+    // overlapping (or touching) activations of a lifeline at the same depth become one; an
+    // activation nested in another (a self message's) that runs lower makes the outer one run
+    // NEST_PAD below it, deepest first, then they are joined again
+    let mut merged = merge_bars(done);
+    let deepest = merged.iter().map(|b| b.depth).max().unwrap_or(0);
+    for depth in (1..=deepest).rev() {
+        let inner: Vec<(u64, f32, f32)> = merged.iter().filter(|b| b.depth == depth).map(|b| (b.lifeline, b.y0, b.y1)).collect();
+        for (lid, y0, y1) in inner {
+            if let Some(outer) = merged.iter_mut().filter(|o| o.lifeline == lid && o.depth == depth - 1 && o.y0 <= y0 && y0 <= o.y1 + 0.5).last() {
+                if outer.y1 < y1 + NEST_PAD {
+                    outer.y1 = y1 + NEST_PAD;
+                }
             }
         }
-        merged.push(b);
     }
+    merged = merge_bars(merged);
     out.bars = merged;
 
     // message ends sit on the outer edge of the top activation at that height
