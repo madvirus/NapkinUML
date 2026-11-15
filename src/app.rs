@@ -87,6 +87,7 @@ enum Act {
     ExportPng,
     ExportMany,
     Print,
+    CopyImage,
     ProjectProperties,
     CloseProject,
     Exit,
@@ -424,6 +425,59 @@ struct ExportDlg {
     chosen: Vec<(u64, bool)>,
     folder: Option<PathBuf>,
     pk: Picker,
+    format: ImgFormat,
+}
+
+/// The picture formats Export can write.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum ImgFormat {
+    Png,
+    Jpeg,
+    Webp,
+}
+
+impl ImgFormat {
+    const ALL: [ImgFormat; 3] = [ImgFormat::Png, ImgFormat::Jpeg, ImgFormat::Webp];
+    fn ext(self) -> &'static str {
+        match self {
+            ImgFormat::Png => "png",
+            ImgFormat::Jpeg => "jpg",
+            ImgFormat::Webp => "webp",
+        }
+    }
+    fn label(self) -> &'static str {
+        match self {
+            ImgFormat::Png => "PNG",
+            ImgFormat::Jpeg => "JPEG",
+            ImgFormat::Webp => "WebP",
+        }
+    }
+    /// What the format is good for, shown beside the choice.
+    fn note(self) -> &'static str {
+        match self {
+            ImgFormat::Png => "Sharp, no loss (best for diagrams)",
+            ImgFormat::Jpeg => "Small files, slight blur on lines (quality 92)",
+            ImgFormat::Webp => "Sharp, no loss, smaller than PNG",
+        }
+    }
+    fn exts(self) -> &'static [&'static str] {
+        match self {
+            ImgFormat::Png => &["png"],
+            ImgFormat::Jpeg => &["jpg", "jpeg"],
+            ImgFormat::Webp => &["webp"],
+        }
+    }
+    fn from_id(s: &str) -> ImgFormat {
+        match s.to_ascii_lowercase().as_str() {
+            "jpg" | "jpeg" => ImgFormat::Jpeg,
+            "webp" => ImgFormat::Webp,
+            _ => ImgFormat::Png,
+        }
+    }
+    fn from_path(p: &std::path::Path) -> Option<ImgFormat> {
+        let e = p.extension()?.to_str()?.to_ascii_lowercase();
+        ImgFormat::ALL.into_iter().find(|f| f.exts().contains(&e.as_str()))
+    }
 }
 
 /// Search text and type filter of the diagram picker (Print and Export dialogs).
@@ -710,6 +764,7 @@ fn sc(mods: Modifiers, key: Key) -> KeyboardShortcut {
 const SC_NEW: KeyboardShortcut = KeyboardShortcut::new(Modifiers::COMMAND, Key::N);
 const SC_OPEN: KeyboardShortcut = KeyboardShortcut::new(Modifiers::COMMAND, Key::O);
 const SC_PRINT: KeyboardShortcut = KeyboardShortcut::new(Modifiers::COMMAND, Key::P);
+const SC_COPY_IMAGE: KeyboardShortcut = KeyboardShortcut::new(Modifiers::COMMAND.plus(Modifiers::SHIFT), Key::C);
 const SC_SAVE: KeyboardShortcut = KeyboardShortcut::new(Modifiers::COMMAND, Key::S);
 const SC_SAVE_AS: KeyboardShortcut = KeyboardShortcut::new(Modifiers::COMMAND.plus(Modifiers::SHIFT), Key::S);
 const SC_UNDO: KeyboardShortcut = KeyboardShortcut::new(Modifiers::COMMAND, Key::Z);
@@ -2203,7 +2258,7 @@ impl UmlApp {
             }
             let next = self.batch.as_mut().and_then(|b| b.queue.pop_front());
             if let Some((id, path)) = next {
-                let ok = self.picture_of(id, 2.0, 8000.0).map(|pic| save_rgb_png(&pic, &path)).unwrap_or(false);
+                let ok = self.picture_of(id, 2.0, 8000.0).map(|pic| save_picture(&pic, &path)).unwrap_or(false);
                 if let Some(b) = self.batch.as_mut() {
                     if ok {
                         b.done += 1;
@@ -2318,7 +2373,8 @@ impl UmlApp {
         // every diagram is ticked at first; the folder starts beside the project file
         let chosen = p.diagrams.iter().map(|d| (d.id, true)).collect();
         let folder = self.path.as_ref().and_then(|f| f.parent().map(|d| d.to_path_buf()));
-        self.export_dlg = Some(ExportDlg { chosen, folder, pk: Picker::default() });
+        let format = ImgFormat::from_id(&self.settings.export_format);
+        self.export_dlg = Some(ExportDlg { chosen, folder, pk: Picker::default(), format });
     }
 
     fn export_dialog(&mut self, ctx: &egui::Context) {
@@ -2340,7 +2396,7 @@ impl UmlApp {
             .show(ctx, |ui| {
                 modal_dialog(ui);
                 ui.set_width(420.0);
-                ui.label(t("Diagrams to export (one PNG image each):"));
+                ui.label(t("Diagrams to export (one image each):"));
                 diagram_picker(ui, "export_pick", lang, &project, &mut dlg.chosen, &mut dlg.pk, &tabs, current, 300.0);
                 ui.separator();
                 ui.horizontal(|ui| {
@@ -2357,6 +2413,15 @@ impl UmlApp {
                         dlg.folder = Some(f);
                     }
                 }
+                ui.horizontal(|ui| {
+                    ui.label(t("Format"));
+                    egui::ComboBox::from_id_salt("export_format").width(90.0).selected_text(dlg.format.label()).show_ui(ui, |ui| {
+                        for f in ImgFormat::ALL {
+                            ui.selectable_value(&mut dlg.format, f, f.label());
+                        }
+                    });
+                    ui.weak(t(dlg.format.note()));
+                });
                 ui.weak(t("Files are named after the diagrams; existing files with the same name are replaced."));
                 ui.separator();
                 let n = dlg.chosen.iter().filter(|c| c.1).count();
@@ -2372,14 +2437,16 @@ impl UmlApp {
         if go {
             let folder = dlg.folder.clone().unwrap();
             let ids: Vec<u64> = dlg.chosen.iter().filter(|c| c.1).map(|c| c.0).collect();
-            self.start_batch_export(ids, folder);
+            self.settings.export_format = dlg.format.ext().to_string();
+            self.settings.save();
+            self.start_batch_export(ids, folder, dlg.format);
         } else if !(cancel || esc || !open) {
             self.export_dlg = Some(dlg);
         }
     }
 
     /// Queue the diagrams; work_jobs draws and saves one per frame.
-    fn start_batch_export(&mut self, ids: Vec<u64>, folder: PathBuf) {
+    fn start_batch_export(&mut self, ids: Vec<u64>, folder: PathBuf, format: ImgFormat) {
         let Some(p) = self.project.as_ref() else { return };
         let mut used: std::collections::HashSet<String> = std::collections::HashSet::new();
         let mut queue = std::collections::VecDeque::new();
@@ -2392,7 +2459,7 @@ impl UmlApp {
                 name = format!("{base} ({k})");
                 k += 1;
             }
-            queue.push_back((id, folder.join(format!("{name}.png"))));
+            queue.push_back((id, folder.join(format!("{name}.{}", format.ext()))));
         }
         if queue.is_empty() {
             return;
@@ -2404,16 +2471,75 @@ impl UmlApp {
         self.job_cancel = false;
     }
 
+    /// The selection (with what sits inside selected containers, attached ports, joined
+    /// interfaces and the lines among them), or the whole diagram when nothing is selected,
+    /// put on the clipboard as a picture (twice the 100% size) for pasting into PowerPoint,
+    /// Word and the like.
+    fn copy_as_image(&mut self) {
+        let lang = self.settings.language;
+        let (Some(p), Some(d)) = (self.project.as_ref(), self.diag()) else { return };
+        let mut sub = d.clone();
+        let picked = !self.sel_shapes.is_empty() || !self.sel_conns.is_empty();
+        if picked {
+            let mut ids: std::collections::HashSet<u64> = self.sel_shapes.iter().copied().collect();
+            for c in d.connectors.iter().filter(|c| self.sel_conns.contains(&c.id)) {
+                ids.insert(c.from);
+                ids.insert(c.to);
+            }
+            for s in d.shapes.iter().filter(|s| ids.contains(&s.id)).cloned().collect::<Vec<_>>() {
+                if s.kind.is_container() {
+                    for o in d.shapes.iter().filter(|o| o.id != s.id && s.contains_rect(o)) {
+                        ids.insert(o.id);
+                    }
+                }
+            }
+            for s in d.shapes.iter().filter(|s| ids.contains(&s.id)).cloned().collect::<Vec<_>>() {
+                ids.extend(attached_ports(d, &s));
+                ids.extend(joined_interfaces(d, &s));
+            }
+            sub.shapes.retain(|s| ids.contains(&s.id));
+            let kept_lines: std::collections::HashSet<u64> = d.connectors.iter().filter(|c| ids.contains(&c.from) && ids.contains(&c.to)).map(|c| c.id).collect();
+            // a note anchored to a kept line stays too
+            sub.connectors.retain(|c| kept_lines.contains(&c.id) || (ids.contains(&c.from) && kept_lines.contains(&c.to)));
+        }
+        if sub.shapes.is_empty() {
+            self.status = tr(lang, "There is nothing to copy.").to_string();
+            return;
+        }
+        let pic = crate::offscreen::diagram_picture(&sub, &p.options, &self.look(), &self.font_defs, 2.0, 6000.0);
+        let (w, h) = pic.dimensions();
+        let rgba: Vec<u8> = pic.pixels().flat_map(|px| [px[0], px[1], px[2], 255]).collect();
+        let result = arboard::Clipboard::new().and_then(|mut cb| cb.set_image(arboard::ImageData { width: w as usize, height: h as usize, bytes: std::borrow::Cow::Owned(rgba) }));
+        self.status = match result {
+            Ok(()) => format!("{} ({w} x {h})", tr(lang, if picked { "The selection was copied as an image" } else { "The diagram was copied as an image" })),
+            Err(e) => format!("{}: {e}", tr(lang, "Could not copy the image")),
+        };
+    }
+
     fn export_image(&mut self) {
         let Some(id) = self.active else { return };
         let name = self.diag().map(|d| d.name.clone()).unwrap_or_default();
-        if let Some(mut p) = rfd::FileDialog::new().add_filter("PNG image", &["png"]).set_file_name(format!("{}.png", file_name_for(&name))).save_file() {
-            if p.extension().is_none() {
-                p.set_extension("png");
-            }
+        // the format last used comes first; the file's extension decides the format
+        let last = ImgFormat::from_id(&self.settings.export_format);
+        let mut fd = rfd::FileDialog::new();
+        for f in std::iter::once(last).chain(ImgFormat::ALL.into_iter().filter(|f| *f != last)) {
+            fd = fd.add_filter(format!("{} {}", f.label(), tr(self.settings.language, "image")), f.exts());
+        }
+        if let Some(mut p) = fd.set_file_name(format!("{}.{}", file_name_for(&name), last.ext())).save_file() {
+            let format = match ImgFormat::from_path(&p) {
+                Some(f) => f,
+                None => {
+                    let mut s = p.into_os_string();
+                    s.push(format!(".{}", last.ext()));
+                    p = PathBuf::from(s);
+                    last
+                }
+            };
+            self.settings.export_format = format.ext().to_string();
+            self.settings.save();
             self.commit_edit();
             // drawn off screen at twice its 100% size, so the view doesn't move
-            let ok = self.picture_of(id, 2.0, 8000.0).map(|pic| save_rgb_png(&pic, &p)).unwrap_or(false);
+            let ok = self.picture_of(id, 2.0, 8000.0).map(|pic| save_picture(&pic, &p)).unwrap_or(false);
             self.status = if ok { format!("Exported {}", p.display()) } else { format!("Could not export {}", p.display()) };
         }
     }
@@ -2550,6 +2676,7 @@ impl UmlApp {
             MItem::Sep,
             a("Cut", Some(&sc(Modifiers::COMMAND, Key::X)), has_shapes, Act::Cut),
             a("Copy", Some(&sc(Modifiers::COMMAND, Key::C)), has_shapes, Act::Copy),
+            a(if has_sel { "Copy Selection as Image" } else { "Copy Diagram as Image" }, Some(&SC_COPY_IMAGE), has_diagram, Act::CopyImage),
             a("Paste", Some(&sc(Modifiers::COMMAND, Key::V)), self.clipboard.is_some() && has_diagram, Act::Paste),
             a("Duplicate", Some(&SC_DUPLICATE), has_shapes, Act::Duplicate),
             a("Delete", Some(&sc(Modifiers::NONE, Key::Delete)), has_sel, Act::Delete),
@@ -2635,6 +2762,7 @@ impl UmlApp {
             Act::Copy => {
                 self.copy_selection();
             }
+            Act::CopyImage => self.copy_as_image(),
             Act::Paste => self.paste(),
             Act::Duplicate => self.duplicate(),
             Act::Delete => self.delete_selection(),
@@ -4729,6 +4857,10 @@ impl UmlApp {
         if (has_sel || !self.sel_conns.is_empty()) && self.menu_item(ui, "Delete", None, true) {
             self.delete_selection();
         }
+        let any_sel = has_sel || !self.sel_conns.is_empty();
+        if self.menu_item(ui, if any_sel { "Copy Selection as Image" } else { "Copy Diagram as Image" }, Some(&SC_COPY_IMAGE), self.active.is_some()) {
+            self.copy_as_image();
+        }
         if has_sel {
             ui.separator();
             if self.menu_item(ui, "Bring to Front", None, true) {
@@ -5171,6 +5303,11 @@ impl UmlApp {
         if ctx.input_mut(|i| i.consume_shortcut(&SC_PRINT)) {
             self.open_print_dialog();
         }
+        let mut image_copied = false;
+        if ctx.input_mut(|i| i.consume_shortcut(&SC_COPY_IMAGE)) {
+            self.copy_as_image();
+            image_copied = true;
+        }
         if ctx.input_mut(|i| i.consume_shortcut(&SC_SAVE)) {
             self.save();
         }
@@ -5242,7 +5379,15 @@ impl UmlApp {
         for e in events {
             match e {
                 egui::Event::Copy => {
-                    self.copy_selection();
+                    // Ctrl+Shift+C reaches us as a Copy with Shift held
+                    if ctx.input(|i| i.modifiers.shift) {
+                        if !image_copied {
+                            self.copy_as_image();
+                            image_copied = true;
+                        }
+                    } else {
+                        self.copy_selection();
+                    }
                 }
                 egui::Event::Cut => self.cut(),
                 egui::Event::Paste(_) => self.paste(),
@@ -5874,6 +6019,10 @@ impl UmlApp {
         // for checking multi-diagram export: NAPKINUML_EXPORT_ALL=<folder> exports every diagram
         // there a few frames into a --screenshot run
         if let Some((_, 10)) = self.screenshot.as_ref() {
+            // for checking Copy as Image: NAPKINUML_COPY_IMAGE=1 copies (the selection, or the diagram)
+            if std::env::var("NAPKINUML_COPY_IMAGE").is_ok() {
+                self.copy_as_image();
+            }
             // for checking printing: NAPKINUML_PRINT_PDF=<file.pdf> prints the first three
             // diagrams to that PDF (paper from NAPKINUML_PRINT_PAPER, A4 by default) and saves
             // the page pictures beside it as PNG
@@ -5890,7 +6039,9 @@ impl UmlApp {
             }
             if let Ok(dir) = std::env::var("NAPKINUML_EXPORT_ALL") {
                 let ids: Vec<u64> = self.project.as_ref().map(|p| p.diagrams.iter().map(|d| d.id).collect()).unwrap_or_default();
-                self.start_batch_export(ids, PathBuf::from(dir));
+                // NAPKINUML_EXPORT_FORMAT=png|jpg|webp picks the format
+                let format = ImgFormat::from_id(&std::env::var("NAPKINUML_EXPORT_FORMAT").unwrap_or_default());
+                self.start_batch_export(ids, PathBuf::from(dir), format);
             }
         }
         if let Some((path, frames)) = self.screenshot.as_mut() {
@@ -5910,13 +6061,26 @@ impl UmlApp {
     }
 }
 
-fn save_rgb_png(image: &image::RgbImage, path: &PathBuf) -> bool {
+/// Save a picture as PNG, JPEG (quality 92) or lossless WebP, by the file's extension.
+fn save_picture(image: &image::RgbImage, path: &PathBuf) -> bool {
     if let Some(dir) = path.parent() {
         if !dir.as_os_str().is_empty() {
             let _ = std::fs::create_dir_all(dir);
         }
     }
-    image.save(path).is_ok()
+    match ImgFormat::from_path(path).unwrap_or(ImgFormat::Png) {
+        ImgFormat::Png => image.save_with_format(path, image::ImageFormat::Png).is_ok(),
+        ImgFormat::Jpeg => {
+            let Ok(file) = std::fs::File::create(path) else { return false };
+            let mut w = std::io::BufWriter::new(file);
+            image::codecs::jpeg::JpegEncoder::new_with_quality(&mut w, 92).encode_image(image).is_ok()
+        }
+        ImgFormat::Webp => {
+            let Ok(file) = std::fs::File::create(path) else { return false };
+            let mut w = std::io::BufWriter::new(file);
+            image::codecs::webp::WebPEncoder::new_lossless(&mut w).encode(image.as_raw(), image.width(), image.height(), image::ExtendedColorType::Rgb8).is_ok()
+        }
+    }
 }
 
 fn save_png(image: &egui::ColorImage, path: &PathBuf) -> bool {

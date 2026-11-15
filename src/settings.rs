@@ -29,6 +29,8 @@ pub struct Settings {
     /// Print: the paper last chosen ("A4", "A3"...) and orientation (0 auto, 1 portrait, 2 landscape).
     pub print_paper: String,
     pub print_orient: u8,
+    /// Export: the picture format last chosen ("png", "jpg" or "webp").
+    pub export_format: String,
 }
 
 impl Default for Settings {
@@ -53,6 +55,7 @@ impl Default for Settings {
             ai_model: String::new(),
             print_paper: "A4".into(),
             print_orient: 0,
+            export_format: "png".into(),
         }
     }
 }
