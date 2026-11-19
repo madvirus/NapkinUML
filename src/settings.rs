@@ -31,6 +31,10 @@ pub struct Settings {
     pub print_orient: u8,
     /// Export: the picture format last chosen ("png", "jpg" or "webp").
     pub export_format: String,
+    /// Ask GitHub for a newer version after start.
+    pub check_updates: bool,
+    /// A version the person chose to skip ("" = none): it is not offered again.
+    pub skip_version: String,
 }
 
 impl Default for Settings {
@@ -56,6 +60,8 @@ impl Default for Settings {
             print_paper: "A4".into(),
             print_orient: 0,
             export_format: "png".into(),
+            check_updates: true,
+            skip_version: String::new(),
         }
     }
 }

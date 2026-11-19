@@ -52,7 +52,25 @@ enum Pending {
     OpenPath(PathBuf),
     Close,
     Exit,
+    /// Start the updated program (opening this project) and close this one.
+    Restart(PathBuf),
 }
+
+/// Where the update offered at start stands.
+enum UpdateState {
+    Idle,
+    Checking(std::sync::mpsc::Receiver<Option<crate::update::Release>>),
+    Available(crate::update::Release),
+    Downloading(crate::update::Job, crate::update::Release),
+    /// Installed: the program to start for the new version.
+    Ready(PathBuf, String),
+    /// Updating failed: the message and the release page.
+    Failed(String, String),
+}
+
+/// Set on windows this program opens itself (Window > New Window...), so only the first
+/// window checks for updates.
+const CHILD_WINDOW_ENV: &str = "NAPKINUML_CHILD_WINDOW";
 
 enum Shot {
     Check(PathBuf),
@@ -735,6 +753,7 @@ pub struct UmlApp {
     ai_chat: Vec<(bool, String)>,
     ai_input: String,
     ai_job: Option<crate::ai::Job>,
+    update: UpdateState,
     show_toolbar: bool,
     show_palette: bool,
     fullscreen: bool,
@@ -876,6 +895,7 @@ impl UmlApp {
             ai_chat: vec![],
             ai_input: String::new(),
             ai_job: None,
+            update: UpdateState::Idle,
             show_toolbar: true,
             show_palette: true,
             fullscreen: false,
@@ -985,6 +1005,15 @@ impl UmlApp {
             if let Some(&top) = n.first() {
                 let path = if n.len() > 1 { n[1..].to_vec() } else { vec![0] };
                 app.menu = Some(MenuState { top: top.min(3), path });
+            }
+        }
+        // look for a newer version in the background (only the finished program, only the
+        // first window; NAPKINUML_UPDATE_TEST=1 checks from a test build too)
+        if app.screenshot.is_none() {
+            crate::update::cleanup_old();
+            let wanted = !cfg!(debug_assertions) || std::env::var("NAPKINUML_UPDATE_TEST").is_ok();
+            if wanted && app.settings.check_updates && std::env::var_os(CHILD_WINDOW_ENV).is_none() {
+                app.update = UpdateState::Checking(crate::update::check(cc.egui_ctx.clone()));
             }
         }
         app
@@ -1267,6 +1296,10 @@ impl UmlApp {
             Pending::Exit => {
                 self.allow_close = true;
             }
+            Pending::Restart(target) => match crate::update::relaunch(&target, self.path.as_deref()) {
+                Ok(()) => self.allow_close = true,
+                Err(e) => self.status = format!("{}: {e}", self.t("Could not restart")),
+            },
         }
     }
 
@@ -1292,7 +1325,7 @@ impl UmlApp {
     fn open_in_new_window(&mut self) {
         let Some(p) = rfd::FileDialog::new().add_filter("UML Project", &[FILE_EXT, "json"]).pick_file() else { return };
         match std::env::current_exe() {
-            Ok(exe) => match std::process::Command::new(exe).arg(&p).spawn() {
+            Ok(exe) => match std::process::Command::new(exe).arg(&p).env(CHILD_WINDOW_ENV, "1").spawn() {
                 Ok(_) => {
                     self.settings.add_recent(&p.to_string_lossy());
                     self.settings.save();
@@ -1306,7 +1339,7 @@ impl UmlApp {
 
     fn new_window(&mut self) {
         match std::env::current_exe() {
-            Ok(exe) => match std::process::Command::new(exe).arg("--new").spawn() {
+            Ok(exe) => match std::process::Command::new(exe).arg("--new").env(CHILD_WINDOW_ENV, "1").spawn() {
                 Ok(_) => self.status = "Opened a new window".into(),
                 Err(e) => self.status = format!("Could not open a new window: {e}"),
             },
@@ -1342,6 +1375,120 @@ impl UmlApp {
         self.ai_chat.push((true, request));
         self.ai_input.clear();
         self.ai_job = Some(crate::ai::start(agent, self.settings.ai_model.clone(), prompt));
+    }
+
+    // ---------- updates ----------
+
+    /// Pick up the background update check and download.
+    fn update_poll(&mut self) {
+        match &self.update {
+            UpdateState::Checking(rx) => match rx.try_recv() {
+                Ok(Some(rel)) if rel.version != self.settings.skip_version => self.update = UpdateState::Available(rel),
+                // no newer version, a skipped one, or the check failed (offline...): say nothing
+                Ok(_) | Err(std::sync::mpsc::TryRecvError::Disconnected) => self.update = UpdateState::Idle,
+                Err(std::sync::mpsc::TryRecvError::Empty) => {}
+            },
+            UpdateState::Downloading(job, rel) => match job.rx.try_recv() {
+                Ok(Ok(target)) => self.update = UpdateState::Ready(target, rel.version.clone()),
+                Ok(Err(_)) if job.cancel.load(std::sync::atomic::Ordering::Relaxed) => self.update = UpdateState::Idle,
+                Ok(Err(e)) => self.update = UpdateState::Failed(e, rel.page.clone()),
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => self.update = UpdateState::Failed("The download stopped unexpectedly.".into(), rel.page.clone()),
+                Err(std::sync::mpsc::TryRecvError::Empty) => {}
+            },
+            _ => {}
+        }
+    }
+
+    /// The update notices, in the lower right corner. They don't block the window: the
+    /// person can keep working and answer when it suits them.
+    fn update_dialogs(&mut self, ctx: &egui::Context) {
+        if matches!(self.update, UpdateState::Idle | UpdateState::Checking(_)) {
+            return;
+        }
+        let lang = self.settings.language;
+        let t = |s: &'static str| tr(lang, s);
+        let mut next: Option<UpdateState> = None;
+        let mut restart: Option<PathBuf> = None;
+        egui::Window::new(t("Update"))
+            .id(egui::Id::new("update_notice"))
+            .collapsible(false)
+            .resizable(false)
+            .anchor(Align2::RIGHT_BOTTOM, [-12.0, -36.0])
+            .show(ctx, |ui| {
+                ui.set_max_width(340.0);
+                match &self.update {
+                    UpdateState::Available(rel) => {
+                        ui.label(format!("{} {}", t("A new version of NapkinUML is available:"), rel.version));
+                        ui.label(format!("{} {}", t("Current version:"), crate::update::CURRENT));
+                        ui.hyperlink_to(t("Release notes"), &rel.page);
+                        ui.add_space(8.0);
+                        ui.horizontal(|ui| {
+                            if ui.button(t("Update")).clicked() {
+                                next = Some(UpdateState::Downloading(crate::update::download_and_install(rel, ctx.clone()), rel.clone()));
+                            }
+                            if ui.button(t("Later")).clicked() {
+                                next = Some(UpdateState::Idle);
+                            }
+                            if ui.button(t("Skip This Version")).clicked() {
+                                self.settings.skip_version = rel.version.clone();
+                                self.settings.save();
+                                next = Some(UpdateState::Idle);
+                            }
+                        });
+                    }
+                    UpdateState::Downloading(job, rel) => {
+                        ui.label(format!("{} {}", t("Downloading version"), rel.version));
+                        let done = job.done.load(std::sync::atomic::Ordering::Relaxed);
+                        let bar = if job.total > 0 {
+                            egui::ProgressBar::new(done as f32 / job.total as f32).show_percentage()
+                        } else {
+                            egui::ProgressBar::new(0.0).text(format!("{:.1} MB", done as f64 / 1_048_576.0)).animate(true)
+                        };
+                        ui.add(bar.desired_width(300.0));
+                        ui.add_space(4.0);
+                        if ui.button(t("Cancel")).clicked() {
+                            job.cancel.store(true, std::sync::atomic::Ordering::Relaxed);
+                            next = Some(UpdateState::Idle);
+                        }
+                    }
+                    UpdateState::Ready(target, version) => {
+                        ui.label(format!("{} {}", t("NapkinUML has been updated to version"), version));
+                        ui.label(t("The new version starts the next time NapkinUML is opened."));
+                        ui.add_space(8.0);
+                        ui.horizontal(|ui| {
+                            if ui.button(t("Restart Now")).clicked() {
+                                restart = Some(target.clone());
+                                next = Some(UpdateState::Idle);
+                            }
+                            if ui.button(t("Later")).clicked() {
+                                next = Some(UpdateState::Idle);
+                            }
+                        });
+                    }
+                    UpdateState::Failed(msg, page) => {
+                        ui.label(t("The update could not be installed."));
+                        ui.label(egui::RichText::new(msg).weak());
+                        ui.add_space(8.0);
+                        ui.horizontal(|ui| {
+                            if ui.button(t("Open Download Page")).clicked() {
+                                crate::update::open_page(page);
+                                next = Some(UpdateState::Idle);
+                            }
+                            if ui.button(t("Close")).clicked() {
+                                next = Some(UpdateState::Idle);
+                            }
+                        });
+                    }
+                    UpdateState::Idle | UpdateState::Checking(_) => {}
+                }
+            });
+        if let Some(s) = next {
+            self.update = s;
+        }
+        if let Some(target) = restart {
+            // unsaved changes are asked about first, as when closing
+            self.request(Pending::Restart(target));
+        }
     }
 
     fn ai_poll(&mut self, ctx: &egui::Context) {
@@ -6074,6 +6221,7 @@ impl UmlApp {
         self.export_dialog(ctx);
         self.print_dialog(ctx);
         self.job_progress(ctx);
+        self.update_dialogs(ctx);
         self.confirm_dialogs(ctx);
     }
 
@@ -6216,6 +6364,7 @@ impl UmlApp {
                                     ui.end_row();
                                 });
                                 ui.checkbox(&mut s.confirm_delete, t("Confirm before deleting diagrams"));
+                                ui.checkbox(&mut s.check_updates, t("Check for updates at startup"));
                             }
                             1 => {
                                 egui::Grid::new("app_diag").num_columns(2).spacing([10.0, 8.0]).show(ui, |ui| {
@@ -6276,6 +6425,7 @@ impl UmlApp {
             let mut s = self.app_opts.as_ref().unwrap().s.clone();
             s.recent = self.settings.recent.clone();
             s.recent.truncate(s.recent_max.max(1));
+            s.skip_version = self.settings.skip_version.clone();
             self.settings = s;
             self.settings.save();
             self.apply_theme(ctx);
@@ -7047,6 +7197,7 @@ impl eframe::App for UmlApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.ppp = ctx.pixels_per_point();
         self.work_jobs(ctx);
+        self.update_poll();
         // fonts given to egui last frame are usable now
         for n in self.font_pending.drain(..) {
             render::register_family(&n);

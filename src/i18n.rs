@@ -410,6 +410,21 @@ fn korean(s: &str) -> Option<&'static str> {
         "OS Default" => "OS 기본값",
         "Open with New Window..." => "새 윈도우에서 열기...",
         "Center" => "가운데",
+        // updates
+        "Check for updates at startup" => "시작할 때 업데이트 확인",
+        "Update" => "업데이트",
+        "A new version of NapkinUML is available:" => "NapkinUML 새 버전이 있습니다:",
+        "Current version:" => "현재 버전:",
+        "Release notes" => "릴리즈 노트",
+        "Later" => "나중에",
+        "Skip This Version" => "이 버전 건너뛰기",
+        "Downloading version" => "다운로드 중인 버전",
+        "NapkinUML has been updated to version" => "NapkinUML을 다음 버전으로 업데이트했습니다:",
+        "The new version starts the next time NapkinUML is opened." => "다음에 NapkinUML을 실행하면 새 버전으로 시작합니다.",
+        "Restart Now" => "지금 재시작",
+        "The update could not be installed." => "업데이트를 설치하지 못했습니다.",
+        "Open Download Page" => "다운로드 페이지 열기",
+        "Could not restart" => "재시작하지 못했습니다",
         _ => return None,
     })
 }

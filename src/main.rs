@@ -24,6 +24,7 @@ mod print;
 mod render;
 mod seq;
 mod settings;
+mod update;
 
 use std::path::PathBuf;
 
