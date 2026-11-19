@@ -797,6 +797,7 @@ const SC_NEW_DIAGRAM: KeyboardShortcut = KeyboardShortcut::new(Modifiers::COMMAN
 const SC_ZOOM_IN: KeyboardShortcut = KeyboardShortcut::new(Modifiers::COMMAND, Key::Equals);
 const SC_ZOOM_OUT: KeyboardShortcut = KeyboardShortcut::new(Modifiers::COMMAND, Key::Minus);
 const SC_ZOOM_100: KeyboardShortcut = KeyboardShortcut::new(Modifiers::COMMAND, Key::Num0);
+const SC_PROPERTY: KeyboardShortcut = KeyboardShortcut::new(Modifiers::COMMAND.plus(Modifiers::SHIFT), Key::P);
 const SC_FULLSCREEN: KeyboardShortcut = KeyboardShortcut::new(Modifiers::NONE, Key::F11);
 const SC_SWITCHER: KeyboardShortcut = KeyboardShortcut::new(Modifiers::CTRL, Key::Tab);
 const SC_NEW_WINDOW: KeyboardShortcut = KeyboardShortcut::new(Modifiers::COMMAND.plus(Modifiers::SHIFT), Key::N);
@@ -816,7 +817,8 @@ fn esc_cancels(ctx: &egui::Context) -> bool {
 }
 
 /// A toolbar button drawn as a window with its left pane (filled when the pane is shown).
-fn pane_button(ui: &mut egui::Ui, on: bool) -> egui::Response {
+/// A pane on/off button drawn as a window with its side pane (left or right) filled when shown.
+fn pane_button(ui: &mut egui::Ui, on: bool, right: bool) -> egui::Response {
     let (rect, resp) = ui.allocate_exact_size(Vec2::new(28.0, 26.0), egui::Sense::click());
     let v = ui.visuals();
     if resp.hovered() {
@@ -824,12 +826,13 @@ fn pane_button(ui: &mut egui::Ui, on: bool) -> egui::Response {
     }
     let ink = if resp.hovered() { v.strong_text_color() } else { v.text_color() };
     let r = Rect::from_center_size(rect.center(), Vec2::new(16.0, 13.0));
-    let side = Rect::from_min_max(r.min, Pos2::new(r.left() + 5.5, r.bottom()));
+    let side = if right { Rect::from_min_max(Pos2::new(r.right() - 5.5, r.top()), r.max) } else { Rect::from_min_max(r.min, Pos2::new(r.left() + 5.5, r.bottom())) };
     if on {
         ui.painter().rect_filled(side, 1.0, ink);
     }
     ui.painter().rect_stroke(r, 1.5, Stroke::new(1.3_f32, ink), egui::StrokeKind::Middle);
-    ui.painter().line_segment([Pos2::new(side.right(), r.top()), Pos2::new(side.right(), r.bottom())], Stroke::new(1.3_f32, ink));
+    let edge = if right { side.left() } else { side.right() };
+    ui.painter().line_segment([Pos2::new(edge, r.top()), Pos2::new(edge, r.bottom())], Stroke::new(1.3_f32, ink));
     resp
 }
 
@@ -948,6 +951,9 @@ impl UmlApp {
             }
         }
         // for checking the hidden left pane in pictures: NAPKINUML_HIDE_LEFT=1
+        if std::env::var("NAPKINUML_HIDE_PROPERTY").is_ok() {
+            app.show_property = false;
+        }
         if std::env::var("NAPKINUML_HIDE_LEFT").is_ok() {
             app.show_left = false;
         }
@@ -2909,7 +2915,7 @@ impl UmlApp {
                 items: vec![
                     c("Diagram Navigator", self.show_left && self.left_tab == 0, Act::ToggleNavigator),
                     c("Model Explorer", self.show_left && self.left_tab == 1, Act::ToggleExplorer),
-                    c("Property", self.show_property, Act::ToggleProperty),
+                    MItem::Act { label: t("Property"), shortcut: fmt(&SC_PROPERTY), enabled: true, act: Act::ToggleProperty, checked: Some(self.show_property) },
                 ],
             },
             c("Toolbar", self.show_toolbar, Act::ToggleToolbar),
@@ -3343,7 +3349,7 @@ impl UmlApp {
                     .on_hover_text(tr(lang, tip))
                     .clicked()
             };
-            if pane_button(ui, self.show_left).on_hover_text(tr(lang, "Show/Hide Diagram Navigator and Model Explorer")).clicked() {
+            if pane_button(ui, self.show_left, false).on_hover_text(tr(lang, "Show/Hide Diagram Navigator and Model Explorer")).clicked() {
                 self.show_left = !self.show_left;
             }
             ui.separator();
@@ -3409,6 +3415,13 @@ impl UmlApp {
             if ui.add(egui::Button::new(format!("✨ {}", tr(lang, "AI Assistant"))).selected(self.show_ai).frame(false)).on_hover_text(tr(lang, "Draw or change diagrams by talking to an AI agent installed on this computer")).clicked() {
                 self.show_ai = !self.show_ai;
             }
+            // the Property pane's switch sits at the right end, above the pane
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                let tip = format!("{} ({})", tr(lang, "Show/Hide Property"), ui.ctx().format_shortcut(&SC_PROPERTY));
+                if pane_button(ui, self.show_property, true).on_hover_text(tip).clicked() {
+                    self.show_property = !self.show_property;
+                }
+            });
         });
     }
 
@@ -3747,7 +3760,14 @@ impl UmlApp {
 
     fn property_pane(&mut self, ui: &mut egui::Ui) {
         let lang = self.settings.language;
-        ui.heading(tr(lang, "Property"));
+        ui.horizontal(|ui| {
+            ui.heading(tr(lang, "Property"));
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if ui.add(egui::Button::new("»").frame(false)).on_hover_text(tr(lang, "Hide this pane")).clicked() {
+                    self.show_property = false;
+                }
+            });
+        });
         ui.separator();
         egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
             let Some(d) = self.diag().cloned() else {
@@ -5937,6 +5957,9 @@ impl UmlApp {
         if ctx.input_mut(|i| i.consume_shortcut(&SC_NEW_DIAGRAM)) {
             self.new_diagram = Some((DiagramKind::Class, String::new()));
         }
+        if ctx.input_mut(|i| i.consume_shortcut(&SC_PROPERTY)) {
+            self.show_property = !self.show_property;
+        }
         if ctx.input_mut(|i| i.consume_shortcut(&SC_FULLSCREEN)) {
             self.fullscreen = !self.fullscreen;
             ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(self.fullscreen));
@@ -7088,6 +7111,16 @@ impl eframe::App for UmlApp {
         self.ai_poll(ctx);
         if self.show_ai {
             egui::SidePanel::right("ai").default_width(320.0).min_width(240.0).show(ctx, |ui| self.ai_pane(ui));
+        }
+        if !self.show_property {
+            // a thin strip keeps the hidden Property pane one click away
+            let lang = self.settings.language;
+            egui::SidePanel::right("property_strip").resizable(false).exact_width(22.0).show(ctx, |ui| {
+                ui.add_space(2.0);
+                if ui.add(egui::Button::new("«").frame(false)).on_hover_text(tr(lang, "Show Property")).clicked() {
+                    self.show_property = true;
+                }
+            });
         }
         if self.show_property {
             egui::SidePanel::right("property").default_width(250.0).min_width(200.0).show(ctx, |ui| self.property_pane(ui));
