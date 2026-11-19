@@ -49,6 +49,17 @@ struct Building {
     started_by: Option<u64>,
     caller: Option<u64>,
     children: u32,
+    /// Opened by a (synchronous) self message.
+    self_call: bool,
+    /// The lowest message sent from this activation (or where it starts).
+    last_use: f32,
+}
+
+impl Building {
+    /// Where an open activation would end if nothing more were sent from it.
+    fn natural_end(&self, opts: &ProjectOptions) -> f32 {
+        if opts.auto_extend_activations { (self.last_use + 12.0).max(self.y0 + 30.0) } else { self.y0 + 30.0 }
+    }
 }
 
 fn center_x(s: &Shape) -> f32 {
@@ -115,6 +126,23 @@ pub fn layout(d: &Diagram, opts: &ProjectOptions) -> SeqLayout {
             }
             next_split += 1;
         }
+        // a self message's activation only takes messages that start on it: one sent or received
+        // below where it would end (and not on a stretch the user dragged out at its depth)
+        // finds it already closed there, so the message belongs to the activation around it
+        for lid in [m.from, m.to] {
+            let Some(stack) = stacks.get_mut(&lid) else { continue };
+            while let Some(&top) = stack.last() {
+                let b = &bars[top];
+                let end = b.natural_end(opts);
+                let stretched = d.shape(lid).map(|s| s.act_spans.iter().any(|sp| sp[2].max(0.0) as usize == b.depth && sp[0].min(sp[1]) <= y && y <= sp[0].max(sp[1]) + 0.5)).unwrap_or(false);
+                if b.self_call && b.y1.is_none() && y > end + 2.0 && !stretched {
+                    bars[top].y1 = Some(end);
+                    stack.pop();
+                } else {
+                    break;
+                }
+            }
+        }
         // implicit return: a lifeline acting again from the activation that made a call has had
         // that call answered, so the activations the call opened (and what they opened in
         // turn) end here instead of stretching on to later messages
@@ -144,7 +172,7 @@ pub fn layout(d: &Diagram, opts: &ProjectOptions) -> SeqLayout {
         // the sender is active while it sends
         if stacks.get(&m.from).map(|s| s.is_empty()).unwrap_or(true) {
             let depth = 0;
-            bars.push(Building { lifeline: m.from, y0: y - 6.0, y1: None, depth, started_by: None, caller: None, children: 0 });
+            bars.push(Building { lifeline: m.from, y0: y - 6.0, y1: None, depth, started_by: None, caller: None, children: 0, self_call: false, last_use: y - 6.0 });
             stacks.entry(m.from).or_default().push(bars.len() - 1);
         }
         // a return to another lifeline first closes activations the sender started on itself
@@ -161,6 +189,7 @@ pub fn layout(d: &Diagram, opts: &ProjectOptions) -> SeqLayout {
             }
         }
         let sender_bar = *stacks[&m.from].last().unwrap();
+        bars[sender_bar].last_use = bars[sender_bar].last_use.max(y + if m.from == m.to { SELF_DROP } else { 0.0 });
         // numbers: simple 1, 2, 3 ... or nested 1, 1.1, 1.2, 1.2.1 ...
         let nested_no = match bars[sender_bar].started_by {
             Some(s) => {
@@ -201,7 +230,7 @@ pub fn layout(d: &Diagram, opts: &ProjectOptions) -> SeqLayout {
             ConnKind::Message => {
                 let y0 = if m.from == m.to { y + SELF_DROP - 6.0 } else { y };
                 let depth = stacks.get(&m.to).map(|s| s.len()).unwrap_or(0);
-                bars.push(Building { lifeline: m.to, y0, y1: None, depth, started_by: Some(m.id), caller: Some(m.from), children: 0 });
+                bars.push(Building { lifeline: m.to, y0, y1: None, depth, started_by: Some(m.id), caller: Some(m.from), children: 0, self_call: m.from == m.to, last_use: y0 });
                 stacks.entry(m.to).or_default().push(bars.len() - 1);
             }
             ConnKind::CreateMessage if m.from != m.to => {
@@ -212,7 +241,7 @@ pub fn layout(d: &Diagram, opts: &ProjectOptions) -> SeqLayout {
                 // asynchronous messages: a short activation, not waiting for a return
                 let y0 = if m.from == m.to { y + SELF_DROP - 6.0 } else { y };
                 let depth = stacks.get(&m.to).map(|s| s.len()).unwrap_or(0);
-                bars.push(Building { lifeline: m.to, y0, y1: Some(y0 + SHORT_BAR), depth, started_by: Some(m.id), caller: Some(m.from), children: 0 });
+                bars.push(Building { lifeline: m.to, y0, y1: Some(y0 + SHORT_BAR), depth, started_by: Some(m.id), caller: Some(m.from), children: 0, self_call: false, last_use: y0 });
             }
         }
     }
