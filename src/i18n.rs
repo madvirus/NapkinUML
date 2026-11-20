@@ -303,6 +303,7 @@ fn korean(s: &str) -> Option<&'static str> {
         "Open Example Project" => "예제 프로젝트 열기",
         "Text" => "텍스트",
         "Alignment" => "정렬",
+        "Create" => "만들기",
         "Show/Hide Property" => "프로퍼티 창 보이기/감추기",
         "Show Property" => "프로퍼티 창 보이기",
         "Add Partition" => "파티션 추가",
