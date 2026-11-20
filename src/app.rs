@@ -1726,6 +1726,12 @@ impl UmlApp {
     fn create_shape(&mut self, kind: ShapeKind, x: f32, y: f32) {
         let snap = self.settings.snap;
         let g = self.settings.grid_size.max(1.0);
+        // the part of the diagram the canvas shows now (diagram units)
+        let visible = {
+            let r = self.canvas_rect;
+            let v = self.view();
+            (r.is_positive() && r.is_finite() && v.zoom > 0.0).then(|| (-v.pan.x / v.zoom, -v.pan.y / v.zoom, (r.width() - v.pan.x) / v.zoom, (r.height() - v.pan.y) / v.zoom))
+        };
         let Some(active) = self.active else { return };
         self.checkpoint();
         let Some(p) = self.project.as_mut() else { return };
@@ -1735,6 +1741,14 @@ impl UmlApp {
         let (w, h) = kind.default_size();
         let mut sx = x - w / 2.0;
         let mut sy = y - h / 2.0;
+        // a shape centred on the click stays inside the visible canvas (a big one such as a
+        // System clicked near the top would otherwise start above it, out of sight); when it is
+        // bigger than the view its top-left corner stays in view
+        if let Some((vx0, vy0, vx1, vy1)) = visible {
+            const M: f32 = 10.0;
+            sx = sx.min(vx1 - w - M).max(vx0 + M);
+            sy = sy.min(vy1 - h - M).max(vy0 + M);
+        }
         if kind.is_lifeline() && dkind == DiagramKind::Sequence {
             // lifelines line up along the top
             if let Some(first) = d.shapes.iter().find(|s| s.kind.is_lifeline()) {
@@ -5896,7 +5910,20 @@ impl UmlApp {
         let mut commit = false;
         let mut cancel = false;
         let ed = self.editing.as_mut().unwrap();
-        egui::Area::new(egui::Id::new("inline_edit")).fixed_pos(pos).order(egui::Order::Foreground).show(ctx, |ui| {
+        // the editor never leaves the canvas (over the menus or toolbar) when its shape is
+        // partly out of view
+        let cr = self.canvas_rect;
+        let pos = if cr.is_positive() {
+            let x = pos.x.min(cr.right() - width - 12.0).max(cr.left() + 2.0);
+            let y = pos.y.min(cr.bottom() - if multiline { 70.0 } else { 28.0 }).max(cr.top() + 2.0);
+            Pos2::new(x, y)
+        } else {
+            pos
+        };
+        // a centred editor (a shape's name) is pinned by its top middle, so it stays centred over
+        // its shape whatever width the text box really takes; line editors keep their left edge
+        let (anchor, pivot) = if left { (pos, Align2::LEFT_TOP) } else { (Pos2::new(pos.x + width / 2.0, pos.y), Align2::CENTER_TOP) };
+        egui::Area::new(egui::Id::new("inline_edit")).pivot(pivot).fixed_pos(anchor).order(egui::Order::Foreground).show(ctx, |ui| {
             let te = if multiline {
                 egui::TextEdit::multiline(&mut ed.text).desired_width(width).desired_rows(3)
             } else {
@@ -6929,6 +6956,23 @@ impl UmlApp {
                 if let Some(first) = self.diag().and_then(|d| d.shapes.iter().find(|s| s.kind.is_lifeline()).map(|s| s.id)) {
                     self.message_to_new_lifeline(kind, first, num(1), num(2));
                     self.editing = None;
+                }
+            }
+            // for checking the name editor: NAPKINUML_EDIT_SHAPE=<name> opens it on the shape so named
+            if let Ok(name) = std::env::var("NAPKINUML_EDIT_SHAPE") {
+                if let Some(id) = self.diag().and_then(|d| d.shapes.iter().find(|s| s.name == name).map(|s| s.id)) {
+                    self.clear_selection();
+                    self.sel_shapes.push(id);
+                    self.start_edit(Some(EditTarget::Shape(id)));
+                }
+            }
+            // for checking placement: NAPKINUML_CREATE_SHAPE=<kind>,<x>,<y> creates a shape as a click
+            // at that diagram point with the shape tool does (its name editor opens)
+            if let Ok(v) = std::env::var("NAPKINUML_CREATE_SHAPE") {
+                let parts: Vec<&str> = v.split(',').collect();
+                let num = |i: usize| parts.get(i).and_then(|p| p.parse::<f32>().ok()).unwrap_or(0.0);
+                if let Ok(kind) = serde_json::from_str::<ShapeKind>(&format!("\"{}\"", parts.first().unwrap_or(&""))) {
+                    self.create_shape(kind, num(1), num(2));
                 }
             }
             // for checking self messages: NAPKINUML_SELF_MESSAGE=<message|async>,<lifeline number>,<y>;...
