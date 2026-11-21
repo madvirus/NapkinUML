@@ -2,7 +2,101 @@
 
 use super::*;
 
+/// NAPKINUML_PLAY=<steps> in a --screenshot run feeds scripted input to the app, as if the
+/// person did it, without touching the real mouse or keyboard. Steps are separated by `;`:
+/// `click x y`, `dclick x y`, `rclick x y`, `drag x0 y0 x1 y1` (window pixels, as in the pictures), `key <Name>`
+/// (an egui key name: ArrowDown, Enter, F2, Escape...), `type <text>`, `wait <frames>` and
+/// `shot <name>` (saves <picture>-<name>.png beside the --screenshot picture). Each step
+/// waits 12 frames after the one before; the --screenshot picture comes after the last.
+pub(super) struct Player {
+    steps: Vec<String>,
+    next: usize,
+    wait: u32,
+    /// Events still to give, one frame's worth per entry.
+    queue: std::collections::VecDeque<Vec<egui::Event>>,
+    pub(super) done_frame: Option<u32>,
+}
+
+impl Player {
+    pub(super) fn new(script: &str) -> Self {
+        let steps = script.split(';').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect();
+        Player { steps, next: 0, wait: 40, queue: Default::default(), done_frame: None }
+    }
+}
+
 impl UmlApp {
+    pub(super) fn play_input(&mut self, ctx: &egui::Context, raw: &mut egui::RawInput) {
+        let Some(frames) = self.screenshot.as_ref().map(|s| s.1) else { return };
+        let shot_base = self.screenshot.as_ref().map(|s| s.0.clone()).unwrap_or_default();
+        let Some(pl) = self.player.as_mut() else { return };
+        if let Some(ev) = pl.queue.pop_front() {
+            raw.events.extend(ev);
+            return;
+        }
+        if pl.wait > 0 {
+            pl.wait -= 1;
+            return;
+        }
+        if pl.next >= pl.steps.len() {
+            if pl.done_frame.is_none() {
+                pl.done_frame = Some(frames);
+            }
+            return;
+        }
+        let step = pl.steps[pl.next].clone();
+        pl.next += 1;
+        pl.wait = 12;
+        let ppp = ctx.pixels_per_point();
+        let mut parts = step.splitn(2, ' ');
+        let cmd = parts.next().unwrap_or("");
+        let rest = parts.next().unwrap_or("").trim().to_string();
+        let nums: Vec<f32> = rest.split_whitespace().filter_map(|n| n.parse().ok()).collect();
+        let at = Pos2::new(nums.first().copied().unwrap_or(0.0) / ppp, nums.get(1).copied().unwrap_or(0.0) / ppp);
+        let m = Modifiers::NONE;
+        let button = |b: PointerButton, pressed: bool| egui::Event::PointerButton { pos: at, button: b, pressed, modifiers: m };
+        match cmd {
+            "click" | "rclick" => {
+                let b = if cmd == "rclick" { PointerButton::Secondary } else { PointerButton::Primary };
+                pl.queue.push_back(vec![egui::Event::PointerMoved(at)]);
+                pl.queue.push_back(vec![button(b, true)]);
+                pl.queue.push_back(vec![button(b, false)]);
+            }
+            "dclick" => {
+                pl.queue.push_back(vec![egui::Event::PointerMoved(at)]);
+                for _ in 0..2 {
+                    pl.queue.push_back(vec![button(PointerButton::Primary, true)]);
+                    pl.queue.push_back(vec![button(PointerButton::Primary, false)]);
+                }
+            }
+            "drag" => {
+                let to = Pos2::new(nums.get(2).copied().unwrap_or(0.0) / ppp, nums.get(3).copied().unwrap_or(0.0) / ppp);
+                pl.queue.push_back(vec![egui::Event::PointerMoved(at)]);
+                pl.queue.push_back(vec![button(PointerButton::Primary, true)]);
+                for k in 1..=8 {
+                    pl.queue.push_back(vec![egui::Event::PointerMoved(at + (to - at) * (k as f32 / 8.0))]);
+                }
+                pl.queue.push_back(vec![egui::PointerButton::Primary].iter().map(|b| egui::Event::PointerButton { pos: to, button: *b, pressed: false, modifiers: m }).collect());
+            }
+            "key" => {
+                if let Some(key) = Key::from_name(&rest) {
+                    let ev = |pressed| egui::Event::Key { key, physical_key: None, pressed, repeat: false, modifiers: m };
+                    pl.queue.push_back(vec![ev(true)]);
+                    pl.queue.push_back(vec![ev(false)]);
+                }
+            }
+            "type" => pl.queue.push_back(vec![egui::Event::Text(rest.clone())]),
+            "wait" => pl.wait = nums.first().map(|n| *n as u32).unwrap_or(12),
+            "shot" => {
+                let stem = shot_base.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_default();
+                let path = shot_base.with_file_name(format!("{stem}-{rest}.png"));
+                self.shot = Some(Shot::Step(path));
+                ctx.send_viewport_cmd(egui::ViewportCommand::Screenshot(egui::UserData::default()));
+            }
+            _ => {}
+        }
+        ctx.request_repaint();
+    }
+
     pub(super) fn handle_screenshots(&mut self, ctx: &egui::Context) {
         let events = ctx.input(|i| i.events.clone());
         for e in events {
@@ -11,6 +105,9 @@ impl UmlApp {
                     Some(Shot::Check(path)) => {
                         save_png(&image, &path);
                         ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                    }
+                    Some(Shot::Step(path)) => {
+                        save_png(&image, &path);
                     }
                     None => {}
                 }
@@ -219,7 +316,11 @@ impl UmlApp {
         if let Some((path, frames)) = self.screenshot.as_mut() {
             *frames += 1;
             // NAPKINUML_SHOT_FRAME=<n> takes the picture at another frame (default 120)
-            let at = std::env::var("NAPKINUML_SHOT_FRAME").ok().and_then(|v| v.parse::<u32>().ok()).unwrap_or(120);
+            let mut at = std::env::var("NAPKINUML_SHOT_FRAME").ok().and_then(|v| v.parse::<u32>().ok()).unwrap_or(120);
+            // with NAPKINUML_PLAY the last picture comes 20 frames after the last step
+            if let Some(pl) = &self.player {
+                at = pl.done_frame.map(|f| f + 20).unwrap_or(u32::MAX);
+            }
             if *frames == at && self.shot.is_none() {
                 self.shot = Some(Shot::Check(path.clone()));
                 ctx.send_viewport_cmd(egui::ViewportCommand::Screenshot(egui::UserData::default()));

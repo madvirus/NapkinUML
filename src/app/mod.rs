@@ -35,6 +35,7 @@ use canvas::*;
 use conn_pick::*;
 use inline_edit::*;
 use dialogs::*;
+use screenshot::Player;
 
 const FILE_EXT: &str = "umlp";
 /// Zoom limits from the original: Zoom In stops at 8.0 (v.ddp.j.bD), Zoom Out refuses 0.02 or less (v.ddp.j.bE).
@@ -85,6 +86,8 @@ enum Pending {
 
 enum Shot {
     Check(PathBuf),
+    /// A picture taken by a NAPKINUML_PLAY step; the run goes on.
+    Step(PathBuf),
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -142,6 +145,8 @@ pub struct UmlApp {
     fullscreen: bool,
     screenshot: Option<(PathBuf, u32)>,
     shot: Option<Shot>,
+    /// NAPKINUML_PLAY: scripted clicks and keys for --screenshot runs.
+    player: Option<Player>,
     /// The fonts given to egui, also used to draw diagrams off screen.
     font_defs: egui::FontDefinitions,
     /// Project > Export > Multiple Diagrams: the dialog, then the export in progress.
@@ -178,6 +183,19 @@ pub struct UmlApp {
     current_folder: Option<u64>,
     label_rects: Vec<(LabelTarget, Rect)>,
     rename_focused: Option<u64>,
+    /// Which tree rows the person opened or closed (others use their default).
+    tree_open: HashMap<TreeKey, bool>,
+    /// The selected row of the left-pane tree.
+    tree_sel: Option<TreeKey>,
+    /// The left-pane tree has the keyboard (a row was clicked; a press outside the pane ends it).
+    tree_focus: bool,
+    /// The rows the left-pane tree drew last frame, for its keys.
+    tree_rows: Vec<TreeRow>,
+    /// Scroll the selected row into view when it's next drawn.
+    tree_reveal: bool,
+    /// The tree row the last click landed on: a double-click opens or closes a row only when
+    /// both of its clicks were on that row.
+    tree_last_click: Option<TreeKey>,
     font_loaded: Vec<String>,
     font_pending: Vec<String>,
     fonts_ready: bool,
@@ -252,6 +270,7 @@ impl UmlApp {
             fullscreen: false,
             screenshot: screenshot.map(|p| (p, 0)),
             shot: None,
+            player: std::env::var("NAPKINUML_PLAY").ok().map(|s| Player::new(&s)),
             font_defs: egui::FontDefinitions::default(),
             export_dlg: None,
             batch: None,
@@ -276,6 +295,12 @@ impl UmlApp {
             current_folder: None,
             label_rects: vec![],
             rename_focused: None,
+            tree_open: HashMap::new(),
+            tree_sel: None,
+            tree_focus: false,
+            tree_rows: vec![],
+            tree_reveal: false,
+            tree_last_click: None,
             font_loaded: vec![],
             font_pending: vec![],
             fonts_ready: false,
@@ -477,6 +502,10 @@ impl UmlApp {
 }
 
 impl eframe::App for UmlApp {
+    fn raw_input_hook(&mut self, ctx: &egui::Context, raw_input: &mut egui::RawInput) {
+        self.play_input(ctx, raw_input);
+    }
+
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.ppp = ctx.pixels_per_point();
         self.work_jobs(ctx);
@@ -587,6 +616,7 @@ impl UmlApp {
             ui.horizontal(|ui| {
                 let mut close: Option<u64> = None;
                 let mut open: Option<u64> = None;
+                let mut rename: Option<(u64, String)> = None;
                 for id in self.tabs.clone() {
                     let Some(d) = self.project.as_ref().and_then(|p| p.diagram(id)) else { continue };
                     let name = d.name.clone();
@@ -597,8 +627,12 @@ impl UmlApp {
                         .inner_margin(egui::Margin::symmetric(6, 2))
                         .show(ui, |ui| {
                             ui.horizontal(|ui| {
-                                if ui.selectable_label(active, &name).clicked() {
+                                let r = ui.selectable_label(active, &name).on_hover_text(tr(self.settings.language, "Double-click to rename"));
+                                if r.clicked() {
                                     open = Some(id);
+                                }
+                                if r.double_clicked() {
+                                    rename = Some((id, name.clone()));
                                 }
                                 if ui.small_button("×").clicked() {
                                     close = Some(id);
@@ -611,6 +645,10 @@ impl UmlApp {
                 }
                 if let Some(id) = close {
                     self.close_diagram(id);
+                }
+                // a double-click on a tab opens Rename for that diagram
+                if rename.is_some() {
+                    self.rename = rename;
                 }
             });
         });

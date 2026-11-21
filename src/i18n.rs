@@ -303,6 +303,7 @@ fn korean(s: &str) -> Option<&'static str> {
         "Open Example Project" => "예제 프로젝트 열기",
         "Text" => "텍스트",
         "Alignment" => "정렬",
+        "Rename Project" => "프로젝트 이름 변경",
         "Double-click to rename" => "더블클릭하면 이름 변경",
         "Help" => "도움말",
         "About NapkinUML" => "NapkinUML에 대하여",

@@ -2,6 +2,9 @@
 
 use super::*;
 
+/// The id Rename uses for the project itself (diagram and folder ids never reach it).
+pub(super) const PROJECT_RENAME_ID: u64 = u64::MAX;
+
 /// Folders nest at most this many levels.
 pub(super) const MAX_FOLDER_DEPTH: usize = 3;
 
@@ -170,6 +173,7 @@ impl UmlApp {
         let pane = ui.max_rect().expand(4.0);
         if ui.ctx().input(|i| i.pointer.any_pressed() && i.pointer.interact_pos().map(|p| !pane.contains(p)).unwrap_or(false)) {
             self.tree_focus = false;
+            self.tree_last_click = None;
         }
         let Some(project) = self.project.clone() else {
             ui.label(tr(lang, "No diagram is open."));
@@ -636,6 +640,10 @@ impl UmlApp {
     /// a row with children.
     fn tree_common(&mut self, rows: &[TreeRow], resps: &[(egui::Response, bool)]) {
         for (row, (r, on_arrow)) in rows.iter().zip(resps) {
+            let same_row = self.tree_last_click == Some(row.key);
+            if r.clicked() {
+                self.tree_last_click = Some(row.key);
+            }
             if r.clicked() || r.secondary_clicked() {
                 self.tree_sel = Some(row.key);
                 self.tree_focus = true;
@@ -643,7 +651,7 @@ impl UmlApp {
                     r.ctx.memory_mut(|m| m.surrender_focus(f));
                 }
             }
-            if row.has_children && ((r.clicked() && *on_arrow) || (r.double_clicked() && !*on_arrow)) {
+            if row.has_children && ((r.clicked() && *on_arrow) || (r.double_clicked() && same_row && !*on_arrow)) {
                 self.tree_open.insert(row.key, !row.open);
             }
         }
@@ -735,6 +743,11 @@ impl UmlApp {
         if f2 {
             let p = self.project.as_ref();
             match row.key {
+                TreeKey::Root(_) => {
+                    if let Some(p) = p {
+                        self.rename = Some((PROJECT_RENAME_ID, p.name.clone()));
+                    }
+                }
                 TreeKey::Folder(fid) => {
                     if let Some(f) = p.and_then(|p| p.folder(fid)) {
                         self.rename = Some((fid, f.name.clone()));

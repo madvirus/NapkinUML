@@ -552,7 +552,7 @@ impl UmlApp {
         let mut cancel = false;
         // the first frame of this dialog puts the cursor in the box with the name selected
         let first = self.rename_focused != Some(id);
-        egui::Window::new(tr(lang, "Rename"))
+        egui::Window::new(tr(lang, if id == PROJECT_RENAME_ID { "Rename Project" } else { "Rename" }))
             .collapsible(false)
             .resizable(false)
             .anchor(Align2::CENTER_CENTER, [0.0, 0.0])
@@ -586,7 +586,10 @@ impl UmlApp {
         if done {
             if !name.trim().is_empty() {
                 if let Some(p) = self.project.as_mut() {
-                    if let Some(f) = p.folders.iter_mut().find(|f| f.id == id) {
+                    if id == PROJECT_RENAME_ID {
+                        p.name = name.trim().to_string();
+                        self.dirty = true;
+                    } else if let Some(f) = p.folders.iter_mut().find(|f| f.id == id) {
                         f.name = name.trim().to_string();
                         self.dirty = true;
                     } else if let Some(d) = p.diagram_mut(id) {
