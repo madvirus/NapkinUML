@@ -301,9 +301,7 @@ impl UmlApp {
                 self.start_print(ids, PrintTo::Pdf(PathBuf::from(pdf)), paper, crate::print::Orient::Auto);
                 // NAPKINUML_JOB_HOLD=1 keeps the job at its first step (to photograph the progress window)
                 if std::env::var("NAPKINUML_JOB_HOLD").is_ok() {
-                    if let Some(j) = self.printing.as_mut() {
-                        j.wait = 250;
-                    }
+                    self.jobs.hold();
                 }
             }
             if let Ok(dir) = std::env::var("NAPKINUML_EXPORT_ALL") {

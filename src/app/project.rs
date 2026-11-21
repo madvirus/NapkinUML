@@ -175,7 +175,7 @@ impl UmlApp {
                 }
                 self.settings.add_recent(&path.to_string_lossy());
                 self.settings.save();
-                self.fonts_check = true;
+                self.fonts.request_refresh();
                 self.status = format!("Opened {}", path.display());
                 self.path = Some(path);
                 self.dirty = false;
@@ -239,7 +239,7 @@ impl UmlApp {
         if let Some(first) = self.project.as_ref().and_then(|p| p.diagrams.first()).map(|d| d.id) {
             self.open_diagram(first);
         }
-        self.fonts_check = true;
+        self.fonts.request_refresh();
         self.dirty = false;
     }
 

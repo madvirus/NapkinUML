@@ -241,7 +241,7 @@ impl UmlApp {
             },
             c("Toolbar", self.show_toolbar, Act::ToggleToolbar),
             c("Diagram Toolbar", self.show_palette, Act::TogglePalette),
-            c("AI Assistant", self.show_ai, Act::ToggleAi),
+            c("AI Assistant", self.ai.show, Act::ToggleAi),
             MItem::Sep,
             MItem::Act { label: t("Full Screen"), shortcut: fmt(&SC_FULLSCREEN), enabled: true, act: Act::ToggleFullscreen, checked: Some(self.fullscreen) },
         ];
@@ -345,7 +345,7 @@ impl UmlApp {
                 self.left_tab = 1;
             }
             Act::ToggleProperty => self.show_property = !self.show_property,
-            Act::ToggleAi => self.show_ai = !self.show_ai,
+            Act::ToggleAi => self.ai.show = !self.ai.show,
             Act::ToggleToolbar => self.show_toolbar = !self.show_toolbar,
             Act::TogglePalette => self.show_palette = !self.show_palette,
             Act::ToggleFullscreen => {
@@ -690,8 +690,8 @@ impl UmlApp {
                 }
             });
             ui.separator();
-            if ui.add(egui::Button::new(format!("✨ {}", tr(lang, "AI Assistant"))).selected(self.show_ai).frame(false)).on_hover_text(tr(lang, "Draw or change diagrams by talking to an AI agent installed on this computer")).clicked() {
-                self.show_ai = !self.show_ai;
+            if ui.add(egui::Button::new(format!("✨ {}", tr(lang, "AI Assistant"))).selected(self.ai.show).frame(false)).on_hover_text(tr(lang, "Draw or change diagrams by talking to an AI agent installed on this computer")).clicked() {
+                self.ai.show = !self.ai.show;
             }
             // the Property pane's switch sits at the right end, above the pane
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -708,7 +708,7 @@ impl UmlApp {
             return;
         }
         let typing = ctx.wants_keyboard_input();
-        let dialog_open = self.switcher.is_some() || self.export_dlg.is_some() || self.batch.is_some() || self.print_dlg.is_some() || self.printing.is_some() || self.confirm.is_some() || self.confirm_delete.is_some() || self.new_diagram.is_some() || self.app_opts.is_some() || self.proj_opts.is_some() || self.rename.is_some();
+        let dialog_open = self.switcher.is_some() || self.jobs.any_open() || self.confirm.is_some() || self.confirm_delete.is_some() || self.new_diagram.is_some() || self.app_opts.is_some() || self.proj_opts.is_some() || self.rename.is_some();
         if ctx.input_mut(|i| i.consume_shortcut(&SC_SAVE_AS)) {
             self.save_as();
         }

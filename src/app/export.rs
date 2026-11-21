@@ -3,11 +3,11 @@
 use super::*;
 
 /// The "export several diagrams" dialog: which diagrams, and the folder to write them to.
-pub(super) struct ExportDlg {
-    pub(super) chosen: Vec<(u64, bool)>,
-    pub(super) folder: Option<PathBuf>,
-    pub(super) pk: Picker,
-    pub(super) format: ImgFormat,
+struct ExportDlg {
+    chosen: Vec<(u64, bool)>,
+    folder: Option<PathBuf>,
+    pk: Picker,
+    format: ImgFormat,
 }
 
 /// The picture formats Export can write.
@@ -208,15 +208,40 @@ pub(super) fn diagram_picker(ui: &mut egui::Ui, salt: &str, lang: Language, p: &
     }
 }
 
+/// Project > Export > Multiple Diagrams and Project > Print: each dialog, then the work it started.
+#[derive(Default)]
+pub(super) struct Jobs {
+    export_dlg: Option<ExportDlg>,
+    batch: Option<BatchExport>,
+    print_dlg: Option<PrintDlg>,
+    printing: Option<PrintJob>,
+    /// The progress window's Cancel was pressed.
+    cancel: bool,
+}
+
+impl Jobs {
+    /// A dialog or progress window of these is open.
+    pub(super) fn any_open(&self) -> bool {
+        self.export_dlg.is_some() || self.batch.is_some() || self.print_dlg.is_some() || self.printing.is_some()
+    }
+
+    /// NAPKINUML_JOB_HOLD: keep printing at its first step (to photograph the progress window).
+    pub(super) fn hold(&mut self) {
+        if let Some(j) = self.printing.as_mut() {
+            j.wait = 250;
+        }
+    }
+}
+
 /// Diagrams being exported, one per frame, each drawn off screen (the window doesn't change).
-pub(super) struct BatchExport {
-    pub(super) queue: std::collections::VecDeque<(u64, PathBuf)>,
-    pub(super) total: usize,
-    pub(super) done: usize,
-    pub(super) failed: usize,
-    pub(super) folder: PathBuf,
+struct BatchExport {
+    queue: std::collections::VecDeque<(u64, PathBuf)>,
+    total: usize,
+    done: usize,
+    failed: usize,
+    folder: PathBuf,
     /// Frames to wait before working, so the progress window is on screen first.
-    pub(super) wait: u8,
+    wait: u8,
 }
 
 /// What to do with the pages once every diagram has been drawn.
@@ -227,25 +252,25 @@ pub(super) enum PrintTo {
 }
 
 /// The Print dialog: paper, orientation and the diagrams to print (one per page).
-pub(super) struct PrintDlg {
-    pub(super) paper: crate::print::Paper,
-    pub(super) orient: crate::print::Orient,
-    pub(super) chosen: Vec<(u64, bool)>,
-    pub(super) pk: Picker,
+struct PrintDlg {
+    paper: crate::print::Paper,
+    orient: crate::print::Orient,
+    chosen: Vec<(u64, bool)>,
+    pk: Picker,
 }
 
 /// Printing in progress: the pages are drawn off screen, one per frame.
-pub(super) struct PrintJob {
-    pub(super) to: PrintTo,
-    pub(super) paper: crate::print::Paper,
-    pub(super) orient: crate::print::Orient,
-    pub(super) queue: std::collections::VecDeque<u64>,
-    pub(super) total: usize,
-    pub(super) pages: Vec<image::RgbImage>,
+struct PrintJob {
+    to: PrintTo,
+    paper: crate::print::Paper,
+    orient: crate::print::Orient,
+    queue: std::collections::VecDeque<u64>,
+    total: usize,
+    pages: Vec<image::RgbImage>,
     /// Frames to wait before the next step, so the progress window shows what comes next.
-    pub(super) wait: u8,
+    wait: u8,
     /// Every page is drawn; the printer dialog (or the PDF) comes next.
-    pub(super) finishing: bool,
+    finishing: bool,
 }
 
 /// A diagram name made safe as a file name.
@@ -298,6 +323,20 @@ pub(super) fn save_png(image: &egui::ColorImage, path: &PathBuf) -> bool {
 }
 
 impl UmlApp {
+    /// For checking the Print dialog (NAPKINUML_PRINT_DLG=1, with NAPKINUML_PICK_SEARCH as its
+    /// search text) and the multi-image export dialog (NAPKINUML_EXPORT_DLG=1) in pictures.
+    pub(super) fn export_test_hooks(&mut self) {
+        if std::env::var("NAPKINUML_PRINT_DLG").is_ok() {
+            self.open_print_dialog();
+            if let (Ok(s), Some(d)) = (std::env::var("NAPKINUML_PICK_SEARCH"), self.jobs.print_dlg.as_mut()) {
+                d.pk.search = s;
+            }
+        }
+        if std::env::var("NAPKINUML_EXPORT_DLG").is_ok() {
+            self.open_export_dialog();
+        }
+    }
+
     pub(super) fn open_print_dialog(&mut self) {
         let Some(p) = self.project.as_ref() else { return };
         if self.active.is_none() {
@@ -305,12 +344,12 @@ impl UmlApp {
         }
         // the open diagram is ticked; others can be added (each prints on its own page)
         let chosen = p.diagrams.iter().map(|d| (d.id, Some(d.id) == self.active)).collect();
-        self.print_dlg = Some(PrintDlg { paper: crate::print::Paper::from_id(&self.settings.print_paper), orient: crate::print::Orient::from_code(self.settings.print_orient), chosen, pk: Picker::default() });
+        self.jobs.print_dlg = Some(PrintDlg { paper: crate::print::Paper::from_id(&self.settings.print_paper), orient: crate::print::Orient::from_code(self.settings.print_orient), chosen, pk: Picker::default() });
     }
 
     pub(super) fn print_dialog(&mut self, ctx: &egui::Context) {
         use crate::print::{Orient, Paper};
-        let Some(mut dlg) = self.print_dlg.take() else { return };
+        let Some(mut dlg) = self.jobs.print_dlg.take() else { return };
         let Some(project) = self.project.clone() else { return };
         let lang = self.settings.language;
         let t = |s: &str| tr(lang, s).to_string();
@@ -379,7 +418,7 @@ impl UmlApp {
             let ids: Vec<u64> = dlg.chosen.iter().filter(|c| c.1).map(|c| c.0).collect();
             self.start_print(ids, to, dlg.paper, dlg.orient);
         } else if !(cancel || esc || !open) {
-            self.print_dlg = Some(dlg);
+            self.jobs.print_dlg = Some(dlg);
         }
     }
 
@@ -390,33 +429,33 @@ impl UmlApp {
         self.commit_edit();
         self.menu = None;
         let total = ids.len();
-        self.printing = Some(PrintJob { to, paper, orient, queue: ids.into_iter().collect(), total, pages: vec![], wait: 3, finishing: false });
-        self.job_cancel = false;
+        self.jobs.printing = Some(PrintJob { to, paper, orient, queue: ids.into_iter().collect(), total, pages: vec![], wait: 3, finishing: false });
+        self.jobs.cancel = false;
         self.status = format!("{} 1/{total}", tr(self.settings.language, "Preparing pages"));
     }
 
     /// The picture of one diagram drawn off screen, at `scale` pixels per unit and at most
     /// `max_px` on its longer side.
-    pub(super) fn picture_of(&self, id: u64, scale: f32, max_px: f32) -> Option<image::RgbImage> {
+    fn picture_of(&self, id: u64, scale: f32, max_px: f32) -> Option<image::RgbImage> {
         let p = self.project.as_ref()?;
         let d = p.diagram(id)?;
-        Some(crate::offscreen::diagram_picture(d, &p.options, &self.look(), &self.font_defs, scale, max_px))
+        Some(crate::offscreen::diagram_picture(d, &p.options, &self.look(), self.fonts.defs(), scale, max_px))
     }
 
     /// Printing and exporting several diagrams: one diagram each frame, so the window keeps
     /// answering and shows how far it got. Esc stops.
     pub(super) fn work_jobs(&mut self, ctx: &egui::Context) {
         let lang = self.settings.language;
-        let esc = ctx.input(|i| i.key_pressed(Key::Escape)) || std::mem::take(&mut self.job_cancel);
-        if self.printing.is_some() {
+        let esc = ctx.input(|i| i.key_pressed(Key::Escape)) || std::mem::take(&mut self.jobs.cancel);
+        if self.jobs.printing.is_some() {
             if esc {
-                self.printing = None;
+                self.jobs.printing = None;
                 self.status = tr(lang, "Printing cancelled.").to_string();
                 return;
             }
             ctx.request_repaint();
             // let the progress window show first (and say what comes next)
-            if let Some(j) = self.printing.as_mut() {
+            if let Some(j) = self.jobs.printing.as_mut() {
                 if j.wait > 0 {
                     j.wait -= 1;
                     return;
@@ -426,17 +465,17 @@ impl UmlApp {
                     return;
                 }
             }
-            let next = self.printing.as_mut().and_then(|j| j.queue.pop_front());
-            let paper = self.printing.as_ref().map(|j| j.paper).unwrap_or(crate::print::Paper::A4);
+            let next = self.jobs.printing.as_mut().and_then(|j| j.queue.pop_front());
+            let paper = self.jobs.printing.as_ref().map(|j| j.paper).unwrap_or(crate::print::Paper::A4);
             if let Some(id) = next {
                 // sharp on paper: about 250 dots per inch over the printable length
                 if let Some(pic) = self.picture_of(id, 8.0, crate::print::target_long_px(paper)) {
-                    if let Some(j) = self.printing.as_mut() {
+                    if let Some(j) = self.jobs.printing.as_mut() {
                         j.pages.push(pic);
                     }
                 }
             }
-            if let Some(j) = self.printing.as_mut() {
+            if let Some(j) = self.jobs.printing.as_mut() {
                 if j.queue.is_empty() {
                     j.finishing = true;
                     j.wait = 2;
@@ -446,23 +485,23 @@ impl UmlApp {
             }
             return;
         }
-        if self.batch.is_some() {
+        if self.jobs.batch.is_some() {
             ctx.request_repaint();
             if esc {
-                if let Some(b) = self.batch.as_mut() {
+                if let Some(b) = self.jobs.batch.as_mut() {
                     b.queue.clear();
                 }
             }
-            if let Some(b) = self.batch.as_mut() {
+            if let Some(b) = self.jobs.batch.as_mut() {
                 if b.wait > 0 && !b.queue.is_empty() {
                     b.wait -= 1;
                     return;
                 }
             }
-            let next = self.batch.as_mut().and_then(|b| b.queue.pop_front());
+            let next = self.jobs.batch.as_mut().and_then(|b| b.queue.pop_front());
             if let Some((id, path)) = next {
                 let ok = self.picture_of(id, 2.0, 8000.0).map(|pic| save_picture(&pic, &path)).unwrap_or(false);
-                if let Some(b) = self.batch.as_mut() {
+                if let Some(b) = self.jobs.batch.as_mut() {
                     if ok {
                         b.done += 1;
                     } else {
@@ -470,9 +509,9 @@ impl UmlApp {
                     }
                 }
             }
-            if let Some(b) = self.batch.as_ref() {
+            if let Some(b) = self.jobs.batch.as_ref() {
                 if b.queue.is_empty() {
-                    let b = self.batch.take().unwrap();
+                    let b = self.jobs.batch.take().unwrap();
                     self.status = if b.failed == 0 {
                         format!("{} {} → {}", b.done, tr(lang, "images exported"), b.folder.display())
                     } else {
@@ -491,7 +530,7 @@ impl UmlApp {
     pub(super) fn job_progress(&mut self, ctx: &egui::Context) {
         let lang = self.settings.language;
         let t = |s: &str| tr(lang, s).to_string();
-        let (title, line, done, total) = if let Some(j) = &self.printing {
+        let (title, line, done, total) = if let Some(j) = &self.jobs.printing {
             let to_pdf = matches!(j.to, PrintTo::Pdf(_));
             let title = t(if to_pdf { "Saving as PDF..." } else { "Preparing to print..." });
             let line = if j.finishing {
@@ -500,7 +539,7 @@ impl UmlApp {
                 format!("{} {} / {}", t("Preparing page"), (j.pages.len() + 1).min(j.total), j.total)
             };
             (title, line, j.pages.len(), j.total)
-        } else if let Some(b) = &self.batch {
+        } else if let Some(b) = &self.jobs.batch {
             let n = b.done + b.failed;
             (t("Exporting images..."), format!("{} {} / {}", t("Exporting image"), (n + 1).min(b.total), b.total), n, b.total)
         } else {
@@ -529,13 +568,13 @@ impl UmlApp {
             });
         });
         if cancel {
-            self.job_cancel = true;
+            self.jobs.cancel = true;
         }
     }
 
     /// Every page is ready: print it or write the PDF.
-    pub(super) fn finish_print(&mut self) {
-        let Some(job) = self.printing.take() else { return };
+    fn finish_print(&mut self) {
+        let Some(job) = self.jobs.printing.take() else { return };
         let lang = self.settings.language;
         let n = job.pages.len();
         let doc = self.project.as_ref().map(|p| p.name.clone()).unwrap_or_else(|| "NapkinUML".into());
@@ -577,11 +616,11 @@ impl UmlApp {
         let chosen = p.diagrams.iter().map(|d| (d.id, true)).collect();
         let folder = self.path.as_ref().and_then(|f| f.parent().map(|d| d.to_path_buf()));
         let format = ImgFormat::from_id(&self.settings.export_format);
-        self.export_dlg = Some(ExportDlg { chosen, folder, pk: Picker::default(), format });
+        self.jobs.export_dlg = Some(ExportDlg { chosen, folder, pk: Picker::default(), format });
     }
 
     pub(super) fn export_dialog(&mut self, ctx: &egui::Context) {
-        let Some(mut dlg) = self.export_dlg.take() else { return };
+        let Some(mut dlg) = self.jobs.export_dlg.take() else { return };
         let Some(project) = self.project.clone() else { return };
         let lang = self.settings.language;
         let t = |s: &str| tr(lang, s).to_string();
@@ -644,7 +683,7 @@ impl UmlApp {
             self.settings.save();
             self.start_batch_export(ids, folder, dlg.format);
         } else if !(cancel || esc || !open) {
-            self.export_dlg = Some(dlg);
+            self.jobs.export_dlg = Some(dlg);
         }
     }
 
@@ -670,8 +709,8 @@ impl UmlApp {
         self.commit_edit();
         self.menu = None;
         let total = queue.len();
-        self.batch = Some(BatchExport { queue, total, done: 0, failed: 0, folder, wait: 3 });
-        self.job_cancel = false;
+        self.jobs.batch = Some(BatchExport { queue, total, done: 0, failed: 0, folder, wait: 3 });
+        self.jobs.cancel = false;
     }
 
     /// The selection (with what sits inside selected containers, attached ports, joined
@@ -709,7 +748,7 @@ impl UmlApp {
             self.status = tr(lang, "There is nothing to copy.").to_string();
             return;
         }
-        let pic = crate::offscreen::diagram_picture(&sub, &p.options, &self.look(), &self.font_defs, 2.0, 6000.0);
+        let pic = crate::offscreen::diagram_picture(&sub, &p.options, &self.look(), self.fonts.defs(), 2.0, 6000.0);
         let (w, h) = pic.dimensions();
         let rgba: Vec<u8> = pic.pixels().flat_map(|px| [px[0], px[1], px[2], 255]).collect();
         let result = arboard::Clipboard::new().and_then(|mut cb| cb.set_image(arboard::ImageData { width: w as usize, height: h as usize, bytes: std::borrow::Cow::Owned(rgba) }));

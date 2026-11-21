@@ -311,7 +311,7 @@ impl UmlApp {
             self.settings = s;
             self.settings.save();
             self.apply_theme(ctx);
-            self.fonts_check = true;
+            self.fonts.request_refresh();
         }
         if esc && !ok {
             cancel = true;
@@ -470,7 +470,7 @@ impl UmlApp {
                 p.author = author;
                 p.description = description;
                 self.dirty = true;
-                self.fonts_check = true;
+                self.fonts.request_refresh();
             }
         }
         if esc && !ok {

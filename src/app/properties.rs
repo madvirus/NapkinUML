@@ -124,7 +124,7 @@ impl UmlApp {
                             s.font = font.clone();
                         }
                     }
-                    self.fonts_check = true;
+                    self.fonts.request_refresh();
                 }
                 return;
             }
@@ -492,7 +492,7 @@ impl UmlApp {
         }
         if let Some(f) = field_changed {
             if f == 9 {
-                self.fonts_check = true;
+                self.fonts.request_refresh();
             }
             if f == 14 {
                 // hiding or showing a compartment fits the class height to what is left

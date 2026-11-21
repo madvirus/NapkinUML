@@ -14,6 +14,7 @@ use std::path::PathBuf;
 
 mod project;
 mod ai_panel;
+mod font_state;
 mod updater;
 mod edit;
 mod view;
@@ -28,6 +29,8 @@ mod inline_edit;
 mod dialogs;
 mod screenshot;
 use project::*;
+use ai_panel::AiPanel;
+use font_state::FontState;
 use updater::*;
 use export::*;
 use menu::*;
@@ -135,12 +138,7 @@ pub struct UmlApp {
     left_tab: usize,
     show_left: bool,
     show_property: bool,
-    /// AI Assistant panel and its conversation (true = the person's message).
-    show_ai: bool,
-    ai_agents: Vec<crate::ai::Found>,
-    ai_chat: Vec<(bool, String)>,
-    ai_input: String,
-    ai_job: Option<crate::ai::Job>,
+    ai: AiPanel,
     update: UpdateState,
     show_toolbar: bool,
     show_palette: bool,
@@ -149,16 +147,8 @@ pub struct UmlApp {
     shot: Option<Shot>,
     /// NAPKINUML_PLAY: scripted clicks and keys for --screenshot runs.
     player: Option<Player>,
-    /// The fonts given to egui, also used to draw diagrams off screen.
-    font_defs: egui::FontDefinitions,
-    /// Project > Export > Multiple Diagrams: the dialog, then the export in progress.
-    export_dlg: Option<ExportDlg>,
-    batch: Option<BatchExport>,
-    /// Project > Print: the dialog, then the pictures being taken for the pages.
-    print_dlg: Option<PrintDlg>,
-    printing: Option<PrintJob>,
-    /// The progress window's Cancel was pressed.
-    job_cancel: bool,
+    fonts: FontState,
+    jobs: Jobs,
     /// Right-clicked on a sequence lifeline: (lifeline, height, on an activation bar, the
     /// split point near the click).
     seq_menu: Option<(u64, f32, bool, Option<f32>)>,
@@ -198,10 +188,6 @@ pub struct UmlApp {
     /// The tree row the last click landed on: a double-click opens or closes a row only when
     /// both of its clicks were on that row.
     tree_last_click: Option<TreeKey>,
-    font_loaded: Vec<String>,
-    font_pending: Vec<String>,
-    fonts_ready: bool,
-    fonts_check: bool,
 }
 
 /// A toolbar button drawn as a window with its left pane (filled when the pane is shown).
@@ -261,11 +247,7 @@ impl UmlApp {
             left_tab: 0,
             show_left: true,
             show_property: true,
-            show_ai: false,
-            ai_agents: crate::ai::detect(),
-            ai_chat: vec![],
-            ai_input: String::new(),
-            ai_job: None,
+            ai: AiPanel::new(),
             update: UpdateState::Idle,
             show_toolbar: true,
             show_palette: true,
@@ -273,12 +255,8 @@ impl UmlApp {
             screenshot: screenshot.map(|p| (p, 0)),
             shot: None,
             player: std::env::var("NAPKINUML_PLAY").ok().map(|s| Player::new(&s)),
-            font_defs: egui::FontDefinitions::default(),
-            export_dlg: None,
-            batch: None,
-            print_dlg: None,
-            printing: None,
-            job_cancel: false,
+            fonts: FontState::new(),
+            jobs: Jobs::default(),
             seq_menu: None,
             sel_bar: None,
             alt_menu: None,
@@ -303,10 +281,6 @@ impl UmlApp {
             tree_rows: vec![],
             tree_reveal: false,
             tree_last_click: None,
-            font_loaded: vec![],
-            font_pending: vec![],
-            fonts_ready: false,
-            fonts_check: true,
         };
         app.apply_theme(&cc.egui_ctx);
         if let Some(p) = open {
@@ -337,18 +311,7 @@ impl UmlApp {
         if std::env::var("NAPKINUML_NEW_FOLDER").is_ok() {
             app.apply_nav(NavAction::NewFolder(None));
         }
-        // for checking the AI Assistant in pictures: NAPKINUML_AI_PANEL=1, and
-        // NAPKINUML_AI_REPLY=<file> applies a saved agent answer as if it had just arrived
-        if std::env::var("NAPKINUML_AI_PANEL").is_ok() {
-            app.show_ai = true;
-        }
-        if let Ok(f) = std::env::var("NAPKINUML_AI_REPLY") {
-            if let Ok(text) = std::fs::read_to_string(f) {
-                app.show_ai = true;
-                app.ai_chat.push((true, "(test answer)".into()));
-                app.ai_answer(Ok(text));
-            }
-        }
+        app.ai_test_hooks();
         // for checking the hidden left pane in pictures: NAPKINUML_HIDE_LEFT=1
         if std::env::var("NAPKINUML_HIDE_PROPERTY").is_ok() {
             app.show_property = false;
@@ -369,17 +332,7 @@ impl UmlApp {
         if let Some(id) = std::env::var("NAPKINUML_JOIN").ok().and_then(|v| v.parse::<u64>().ok()) {
             app.join_interfaces(&[id]);
         }
-        // for checking the Print dialog in pictures: NAPKINUML_PRINT_DLG=1
-        if std::env::var("NAPKINUML_PRINT_DLG").is_ok() {
-            app.open_print_dialog();
-            if let (Ok(s), Some(d)) = (std::env::var("NAPKINUML_PICK_SEARCH"), app.print_dlg.as_mut()) {
-                d.pk.search = s;
-            }
-        }
-        // for checking the multi-image export dialog in pictures: NAPKINUML_EXPORT_DLG=1
-        if std::env::var("NAPKINUML_EXPORT_DLG").is_ok() {
-            app.open_export_dialog();
-        }
+        app.export_test_hooks();
         // for checking the property pane in pictures: NAPKINUML_SELECT_FIRST=1
         if std::env::var("NAPKINUML_SELECT_FIRST").is_ok() {
             if let Some(id) = app.diag().and_then(|d| d.shapes.first()).map(|s| s.id) {
@@ -472,7 +425,6 @@ impl UmlApp {
 
     /// Load the fonts the settings and the project use; egui can draw with them next frame.
     fn refresh_fonts(&mut self, ctx: &egui::Context) {
-        self.fonts_check = false;
         let mut names: Vec<String> = vec![self.settings.font.clone()];
         if let Some(p) = &self.project {
             names.push(p.options.font.clone());
@@ -484,22 +436,7 @@ impl UmlApp {
                 }
             }
         }
-        let mut wanted = self.font_loaded.clone();
-        for n in names {
-            if !n.is_empty() && crate::fonts::available().contains(&n.as_str()) && !wanted.contains(&n) {
-                wanted.push(n);
-            }
-        }
-        if self.fonts_ready && wanted.len() == self.font_loaded.len() {
-            return;
-        }
-        let (defs, loaded) = crate::fonts::build(&wanted);
-        self.font_defs = defs.clone();
-        ctx.set_fonts(defs);
-        self.fonts_ready = true;
-        self.font_pending = loaded.clone();
-        self.font_loaded = loaded;
-        ctx.request_repaint();
+        self.fonts.load(ctx, names);
     }
 }
 
@@ -513,10 +450,7 @@ impl eframe::App for UmlApp {
         self.work_jobs(ctx);
         self.update_poll();
         // fonts given to egui last frame are usable now
-        for n in self.font_pending.drain(..) {
-            render::register_family(&n);
-        }
-        if self.fonts_check {
+        if self.fonts.begin_frame() {
             self.refresh_fonts(ctx);
         }
         self.handle_screenshots(ctx);
@@ -574,7 +508,7 @@ impl eframe::App for UmlApp {
             egui::SidePanel::left("left").default_width(225.0).min_width(160.0).show(ctx, |ui| self.left_pane(ui));
         }
         self.ai_poll(ctx);
-        if self.show_ai {
+        if self.ai.show {
             egui::SidePanel::right("ai").default_width(320.0).min_width(240.0).show(ctx, |ui| self.ai_pane(ui));
         }
         if !self.show_property {
