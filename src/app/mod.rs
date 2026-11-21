@@ -24,6 +24,7 @@ mod navigator;
 mod properties;
 mod canvas;
 mod canvas_input;
+mod drag;
 mod conn_pick;
 mod inline_edit;
 mod dialogs;
