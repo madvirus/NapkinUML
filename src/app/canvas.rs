@@ -425,7 +425,9 @@ impl UmlApp {
         if let Some((id, along)) = self.lane_menu {
             let (idx, count) = self.diag().and_then(|d| d.shape(id)).map(|s| (s.partition_at(along), s.lane_partitions().len())).unwrap_or((0, 0));
             if self.menu_item(ui, "Add Partition", None, true) {
-                self.add_partition(id, idx);
+                if let Some(i) = self.add_partition(id, idx) {
+                    self.start_part_edit(id, i, true);
+                }
                 self.lane_menu = None;
             }
             if self.menu_item(ui, "Remove Partition", None, count > 1) {
@@ -438,7 +440,9 @@ impl UmlApp {
         if let Some((id, at)) = self.alt_menu {
             let count = self.diag().and_then(|d| d.shape(id)).map(|s| s.alt_dividers().len()).unwrap_or(0);
             if self.menu_item(ui, "Add Else Section", None, true) {
-                self.add_alt_section(id);
+                if let Some(i) = self.add_alt_section(id) {
+                    self.start_guard_edit(id, i);
+                }
                 self.alt_menu = None;
             }
             if self.menu_item(ui, "Remove Else Section", None, count > 0) {

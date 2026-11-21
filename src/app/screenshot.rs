@@ -192,7 +192,7 @@ impl UmlApp {
                                 }
                                 ["rename", i, t] => {
                                     if let Ok(i) = i.parse::<usize>() {
-                                        self.editing = Some(InlineEdit { target: EditTarget::Shape(id), text: t.to_string(), focus: false, line: None, new_line: false, part: Some(i) });
+                                        self.editing = Some(InlineEdit { target: EditTarget::Shape(id), text: t.to_string(), focus: false, line: None, new_line: false, part: Some(i), select_all: false, guard: None });
                                         self.commit_edit();
                                     }
                                 }

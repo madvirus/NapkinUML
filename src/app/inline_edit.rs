@@ -12,6 +12,10 @@ pub(super) struct InlineEdit {
     pub(super) new_line: bool,
     /// Editing the name of one partition of a swimlane, by index.
     pub(super) part: Option<usize>,
+    /// Select the whole text when the editor first takes focus (a default to type over).
+    pub(super) select_all: bool,
+    /// Editing the guard of one section (by divider index) of an alternative fragment.
+    pub(super) guard: Option<usize>,
 }
 
 /// A name label on the canvas that can be dragged.
@@ -43,7 +47,7 @@ impl UmlApp {
             EditTarget::Conn(id) => d.connectors.iter().find(|c| c.id == id).map(|c| c.name.clone()),
         };
         if let Some(text) = text {
-            self.editing = Some(InlineEdit { target: t, text, focus: true, line: None, new_line: false, part: None });
+            self.editing = Some(InlineEdit { target: t, text, focus: true, line: None, new_line: false, part: None, select_all: false, guard: None });
         }
     }
 
@@ -74,10 +78,12 @@ impl UmlApp {
         None
     }
 
-    /// Edit one attribute (ops = false) or operation row in place; None adds a new row.
-    pub(super) fn start_line_edit(&mut self, id: u64, ops: bool, idx: Option<usize>) {
+    /// Edit one attribute (ops = false) or operation row in place; None adds a new row, whose
+    /// editor starts with `init` (selected, to type over) if given, else empty.
+    pub(super) fn start_line_edit(&mut self, id: u64, ops: bool, idx: Option<usize>, init: Option<String>) {
         let Some(s) = self.diag().and_then(|d| d.shape(id)).cloned() else { return };
         let list = if ops { &s.operations } else { &s.attributes };
+        let select_all = init.is_some();
         let (idx, text, new_line) = match idx {
             Some(i) if i < list.len() => (i, list[i].clone(), false),
             _ => {
@@ -90,12 +96,28 @@ impl UmlApp {
                         t.attributes.push(String::new());
                     }
                 }
-                (n, String::new(), true)
+                (n, init.unwrap_or_default(), true)
             }
         };
         self.clear_selection();
         self.sel_shapes.push(id);
-        self.editing = Some(InlineEdit { target: EditTarget::Shape(id), text, focus: true, line: Some((ops, idx)), new_line, part: None });
+        self.editing = Some(InlineEdit { target: EditTarget::Shape(id), text, focus: true, line: Some((ops, idx)), new_line, part: None, select_all: select_all && new_line, guard: None });
+    }
+
+    /// Edit the name of partition `i` of a swimlane in place.
+    pub(super) fn start_part_edit(&mut self, id: u64, i: usize, select_all: bool) {
+        let Some(name) = self.diag().and_then(|d| d.shape(id)).and_then(|s| s.lane_partitions().get(i).map(|p| p.name.clone())) else { return };
+        self.clear_selection();
+        self.sel_shapes.push(id);
+        self.editing = Some(InlineEdit { target: EditTarget::Shape(id), text: name, focus: true, line: None, new_line: false, part: Some(i), select_all, guard: None });
+    }
+
+    /// Edit the guard of section `i` (by divider index) of an alternative fragment in place.
+    pub(super) fn start_guard_edit(&mut self, id: u64, i: usize) {
+        let Some(guard) = self.diag().and_then(|d| d.shape(id)).and_then(|s| s.alt_dividers().get(i).map(|d| d.guard.clone())) else { return };
+        self.clear_selection();
+        self.sel_shapes.push(id);
+        self.editing = Some(InlineEdit { target: EditTarget::Shape(id), text: guard, focus: true, line: None, new_line: false, part: None, select_all: true, guard: Some(i) });
     }
 
     pub(super) fn double_click(&mut self, cam: &Cam, d: &Diagram, p: Pos2) {
@@ -139,9 +161,7 @@ impl UmlApp {
             for s in d.shapes.iter().rev().filter(|s| s.kind.is_swimlane()) {
                 let parts = s.lane_partitions();
                 if let Some(i) = (0..parts.len()).find(|&i| s.partition_header(i).map(|(hx, hy, hw, hh)| x >= hx && x <= hx + hw && y >= hy && y <= hy + hh).unwrap_or(false)) {
-                    self.clear_selection();
-                    self.sel_shapes.push(s.id);
-                    self.editing = Some(InlineEdit { target: EditTarget::Shape(s.id), text: parts[i].name.clone(), focus: true, line: None, new_line: false, part: Some(i) });
+                    self.start_part_edit(s.id, i, false);
                     return;
                 }
             }
@@ -150,7 +170,7 @@ impl UmlApp {
         if let Some(EditTarget::Shape(id)) = target {
             if let Some(s) = d.shape(id) {
                 if let Some((ops, idx)) = self.line_at(s, cam, p) {
-                    self.start_line_edit(id, ops, idx);
+                    self.start_line_edit(id, ops, idx, None);
                     return;
                 }
             }
@@ -163,6 +183,10 @@ impl UmlApp {
         let Some(ed) = self.editing.take() else { return };
         if let (EditTarget::Shape(id), Some((ops, idx))) = (ed.target, ed.line) {
             let text = ed.text.trim().to_string();
+            if ed.new_line && text.is_empty() {
+                self.drop_new_line(id, ops, idx);
+                return;
+            }
             let current = self.diag().and_then(|d| d.shape(id)).and_then(|s| if ops { s.operations.get(idx) } else { s.attributes.get(idx) }).cloned();
             let Some(current) = current else { return };
             if current == text && !text.is_empty() {
@@ -181,9 +205,6 @@ impl UmlApp {
                     list[idx] = text.clone();
                 }
             }
-            if ed.new_line && text.is_empty() {
-                self.undo.pop();
-            }
             return;
         }
         if let (EditTarget::Shape(id), Some(i)) = (ed.target, ed.part) {
@@ -197,6 +218,22 @@ impl UmlApp {
                 if let Some(p) = s.partitions.as_mut().and_then(|v| v.get_mut(i)) {
                     p.name = ed.text;
                 }
+            }
+            return;
+        }
+        if let (EditTarget::Shape(id), Some(i)) = (ed.target, ed.guard) {
+            let text = ed.text.trim().to_string();
+            let current = self.diag().and_then(|d| d.shape(id)).and_then(|s| s.alt_dividers().get(i).map(|d| d.guard.clone()));
+            if current.is_none() || current.as_deref() == Some(text.as_str()) {
+                return;
+            }
+            self.checkpoint();
+            if let Some(s) = self.diag_mut().and_then(|d| d.shape_mut(id)) {
+                let mut v = s.alt_dividers();
+                if let Some(dv) = v.get_mut(i) {
+                    dv.guard = text;
+                }
+                s.dividers = Some(v);
             }
             return;
         }
@@ -229,13 +266,24 @@ impl UmlApp {
     pub(super) fn cancel_edit(&mut self) {
         let Some(ed) = self.editing.take() else { return };
         if let (EditTarget::Shape(id), Some((ops, idx)), true) = (ed.target, ed.line, ed.new_line) {
-            if let Some(s) = self.diag_mut().and_then(|d| d.shape_mut(id)) {
-                let list = if ops { &mut s.operations } else { &mut s.attributes };
-                if idx < list.len() && list[idx].is_empty() {
-                    list.remove(idx);
+            self.drop_new_line(id, ops, idx);
+        }
+    }
+
+    /// Take back a row added for an edit that ended empty or was cancelled: the shape returns to
+    /// how it was before (also its size, which grew for the row), and so does the undo history.
+    fn drop_new_line(&mut self, id: u64, ops: bool, idx: usize) {
+        let before = self.undo.pop().and_then(|(_, d)| d.shape(id).cloned());
+        if let Some(s) = self.diag_mut().and_then(|d| d.shape_mut(id)) {
+            match before {
+                Some(b) => *s = b,
+                None => {
+                    let list = if ops { &mut s.operations } else { &mut s.attributes };
+                    if idx < list.len() && list[idx].is_empty() {
+                        list.remove(idx);
+                    }
                 }
             }
-            self.undo.pop();
         }
     }
 
@@ -244,6 +292,7 @@ impl UmlApp {
         let target = ed.target;
         let line = ed.line;
         let part = ed.part;
+        let guard = ed.guard;
         let opts = self.project.as_ref().map(|p| p.options.clone()).unwrap_or_default();
         let look = self.look();
         let ds = opts.connector_style;
@@ -260,7 +309,16 @@ impl UmlApp {
                 let ww = sw.clamp(100.0, 300.0);
                 Some((Pos2::new(a.x + sw / 2.0 - ww / 2.0, a.y + 2.0), ww, false, false))
             })),
-            _ => None,
+            _ => match (target, guard) {
+                // just under the section's dashed line, where its guard is drawn
+                (EditTarget::Shape(id), Some(i)) => Some(d.shape(id).and_then(|s| {
+                    let dv = s.alt_dividers().into_iter().nth(i)?;
+                    let r = cam.rect(s);
+                    let my = r.top() + dv.y.clamp(crate::model::ALT_HEAD.min(s.h), s.h.max(0.0)) * cam.zoom;
+                    Some((Pos2::new(r.left() + 4.0, my + 2.0), r.width().clamp(120.0, 300.0), false, true))
+                })),
+                _ => None,
+            },
         };
         let placed = if let Some(p) = part_place { p } else { match (target, line) {
             (EditTarget::Shape(id), Some((ops, idx))) => d.shape(id).and_then(|s| {
@@ -296,6 +354,7 @@ impl UmlApp {
         let hint = match line {
             Some((false, _)) => "-name : Type",
             Some((true, _)) => "+operation() : void",
+            None if guard.is_some() => tr(self.settings.language, "guard"),
             None => "",
         };
         let mut commit = false;
@@ -325,6 +384,14 @@ impl UmlApp {
             if ed.focus {
                 r.request_focus();
                 ed.focus = false;
+                if ed.select_all {
+                    // the text is a default: select it all, so typing replaces it
+                    ed.select_all = false;
+                    let mut state = egui::text_edit::TextEditState::load(ui.ctx(), r.id).unwrap_or_default();
+                    let all = egui::text::CCursorRange::two(egui::text::CCursor::new(0), egui::text::CCursor::new(ed.text.chars().count()));
+                    state.cursor.set_char_range(Some(all));
+                    state.store(ui.ctx(), r.id);
+                }
             }
             if ui.input(|i| i.key_pressed(Key::Escape)) {
                 cancel = true;

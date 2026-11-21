@@ -96,7 +96,7 @@ impl UmlApp {
         }
         let editable = (!kind.is_pseudo() || kind == ShapeKind::Actor || kind.is_network_device()) && !matches!(kind, ShapeKind::AltFragment | ShapeKind::LoopFragment) && !kind.is_swimlane();
         if editable {
-            self.editing = Some(InlineEdit { target: EditTarget::Shape(id), text: name, focus: true, line: None, new_line: false, part: None });
+            self.editing = Some(InlineEdit { target: EditTarget::Shape(id), text: name, focus: true, line: None, new_line: false, part: None, select_all: false, guard: None });
         }
         if !self.sticky {
             self.tool = Tool::Select;
@@ -314,19 +314,22 @@ impl UmlApp {
 
     /// Add a section at the bottom of an alternative fragment (splitting the last section; the
     /// fragment grows if that section is too short). It becomes the [else] section; a section
-    /// that was [else] before keeps an empty guard to fill in.
-    pub(super) fn add_alt_section(&mut self, id: u64) {
+    /// that was [else] before keeps an empty guard to fill in. Returns the index of the section
+    /// whose guard is to be filled in (the new one, or the one that was [else]).
+    pub(super) fn add_alt_section(&mut self, id: u64) -> Option<usize> {
         self.checkpoint();
-        let Some(s) = self.diag_mut().and_then(|d| d.shape_mut(id)) else { return };
+        let s = self.diag_mut().and_then(|d| d.shape_mut(id))?;
         let mut v = s.alt_dividers();
         let top = v.last().map(|d| d.y).unwrap_or(crate::model::ALT_HEAD);
         if s.h - top < 60.0 {
             s.h = top + 80.0;
         }
         let y = (top + s.h) / 2.0;
+        let mut fill = v.len();
         let guard = if v.iter().any(|d| d.guard.trim() == "else") {
             if let Some(last) = v.last_mut().filter(|d| d.guard.trim() == "else") {
                 last.guard.clear();
+                fill = v.len() - 1;
                 "else".to_string()
             } else {
                 String::new()
@@ -336,6 +339,7 @@ impl UmlApp {
         };
         v.push(crate::model::Divider { y, guard });
         s.dividers = Some(v);
+        Some(fill)
     }
 
     /// Take a section of an alternative fragment away: the one at `at` (height below the
@@ -355,13 +359,15 @@ impl UmlApp {
     }
 
     /// Insert a partition into a swimlane after partition `after`; the swimlane grows and what
-    /// stood in the partitions after it moves along with them.
-    pub(super) fn add_partition(&mut self, id: u64, after: usize) {
+    /// stood in the partitions after it moves along with them. Returns the new partition's index.
+    pub(super) fn add_partition(&mut self, id: u64, after: usize) -> Option<usize> {
         self.checkpoint();
-        let Some(dm) = self.diag_mut() else { return };
-        let Some(before) = dm.shape(id).cloned() else { return };
-        let Some((at, size)) = dm.shape_mut(id).map(|s| s.add_partition(after)) else { return };
+        let dm = self.diag_mut()?;
+        let before = dm.shape(id).cloned()?;
+        let idx = after.min(before.lane_partitions().len().saturating_sub(1)) + 1;
+        let (at, size) = dm.shape_mut(id).map(|s| s.add_partition(after))?;
         shift_lane_contents(dm, &before, at, size);
+        Some(idx)
     }
 
     /// Take a partition out of a swimlane; the swimlane shrinks and what stood in the
@@ -626,24 +632,23 @@ impl UmlApp {
         }
     }
 
+    /// Add an attribute (or operation) row with a default text and open it for editing at once.
     pub(super) fn add_line(&mut self, operations: bool) {
         let Some(&id) = self.sel_shapes.first() else { return };
         let vis = self.project.as_ref().map(|p| p.options.default_visibility).unwrap_or('-');
-        self.checkpoint();
-        if let Some(s) = self.diag_mut().and_then(|d| d.shape_mut(id)) {
-            if operations {
-                s.operations.push("+operation() : void".into());
-            } else {
-                let line = match s.kind {
-                    ShapeKind::Entity | ShapeKind::DbView => "column : varchar(255)".to_string(),
-                    ShapeKind::Enumeration => format!("LITERAL{}", s.attributes.len() + 1),
-                    ShapeKind::Instance => "slot = value".to_string(),
-                    ShapeKind::State => "do / activity".to_string(),
-                    _ => format!("{vis}attribute : String"),
-                };
-                s.attributes.push(line);
+        let Some(s) = self.diag().and_then(|d| d.shape(id)) else { return };
+        let line = if operations {
+            "+operation() : void".to_string()
+        } else {
+            match s.kind {
+                ShapeKind::Entity | ShapeKind::DbView => "column : varchar(255)".to_string(),
+                ShapeKind::Enumeration => format!("LITERAL{}", s.attributes.len() + 1),
+                ShapeKind::Instance => "slot = value".to_string(),
+                ShapeKind::State => "do / activity".to_string(),
+                _ => format!("{vis}attribute : String"),
             }
-        }
+        };
+        self.start_line_edit(id, operations, None, Some(line));
     }
 
     pub(super) fn set_arrows(&mut self, id: u64, end: Option<bool>, start: Option<bool>) {
