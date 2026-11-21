@@ -153,6 +153,7 @@ enum Act {
     Switcher,
     AppOptions,
     ProjectOptions,
+    About,
 }
 
 /// One row of a menu.
@@ -739,6 +740,10 @@ pub struct UmlApp {
     editing: Option<InlineEdit>,
     new_diagram: Option<(DiagramKind, String)>,
     app_opts: Option<AppOptionsDlg>,
+    /// Help > About NapkinUML is open.
+    about_open: bool,
+    /// The app icon shown in the About dialog, loaded the first time it opens.
+    about_icon: Option<egui::TextureHandle>,
     proj_opts: Option<ProjectOptionsDlg>,
     switcher: Option<usize>,
     rename: Option<(u64, String)>,
@@ -790,7 +795,7 @@ pub struct UmlApp {
     allow_close: bool,
     title: String,
     menu: Option<MenuState>,
-    menu_top_rects: [Rect; 4],
+    menu_top_rects: [Rect; 5],
     nav_by_type: bool,
     current_folder: Option<u64>,
     label_rects: Vec<(LabelTarget, Rect)>,
@@ -885,6 +890,8 @@ impl UmlApp {
             editing: None,
             new_diagram: None,
             app_opts: None,
+            about_open: false,
+            about_icon: None,
             proj_opts: None,
             switcher: None,
             rename: None,
@@ -923,7 +930,7 @@ impl UmlApp {
             allow_close: false,
             title: String::new(),
             menu: None,
-            menu_top_rects: [Rect::NOTHING; 4],
+            menu_top_rects: [Rect::NOTHING; 5],
             nav_by_type: false,
             current_folder: None,
             label_rects: vec![],
@@ -977,6 +984,14 @@ impl UmlApp {
         // for checking the hidden left pane in pictures: NAPKINUML_HIDE_LEFT=1
         if std::env::var("NAPKINUML_HIDE_PROPERTY").is_ok() {
             app.show_property = false;
+        }
+        // for checking the About dialog in pictures: NAPKINUML_ABOUT=1
+        if std::env::var("NAPKINUML_ABOUT").is_ok() {
+            app.about_open = true;
+        }
+        // for checking a top menu in pictures: NAPKINUML_MENU=<index> opens it with its first row lit
+        if let Some(top) = std::env::var("NAPKINUML_MENU").ok().and_then(|v| v.parse::<usize>().ok()) {
+            app.menu = Some(MenuState { top, path: vec![0] });
         }
         if std::env::var("NAPKINUML_HIDE_LEFT").is_ok() {
             app.show_left = false;
@@ -3122,7 +3137,8 @@ impl UmlApp {
             a("Application Options...", None, true, Act::AppOptions),
             a("Project Options...", None, has_project, Act::ProjectOptions),
         ];
-        vec![(t("Project"), 'P', project), (t("Diagram"), 'D', diagram), (t("View"), 'V', view), (t("Window"), 'W', window)]
+        let help = vec![a("About NapkinUML", None, true, Act::About)];
+        vec![(t("Project"), 'P', project), (t("Diagram"), 'D', diagram), (t("View"), 'V', view), (t("Window"), 'W', window), (t("Help"), 'H', help)]
     }
 
     fn run_act(&mut self, ctx: &egui::Context, act: Act) {
@@ -3225,6 +3241,7 @@ impl UmlApp {
             Act::Switcher => self.open_switcher(),
             Act::AppOptions => self.app_opts = Some(AppOptionsDlg { s: self.settings.clone(), page: 0 }),
             Act::ProjectOptions => self.open_project_options(1),
+            Act::About => self.about_open = true,
         }
     }
 
@@ -3266,11 +3283,11 @@ impl UmlApp {
     fn menu_popups(&mut self, ctx: &egui::Context) {
         let Some(state) = self.menu.clone() else { return };
         let menus = self.menus(ctx);
-        let Some((_, _, items)) = menus.get(state.top) else {
+        let (Some((_, _, items)), Some(top_rect)) = (menus.get(state.top), self.menu_top_rects.get(state.top).copied()) else {
             self.menu = None;
             return;
         };
-        let mut pos = self.menu_top_rects[state.top].left_bottom();
+        let mut pos = top_rect.left_bottom();
         let mut level_items: &Vec<MItem> = items;
         let mut rects: Vec<Rect> = self.menu_top_rects.to_vec();
         let mut action: Option<Act> = None;
@@ -3386,10 +3403,10 @@ impl UmlApp {
         }
     }
 
-    /// Keyboard for the menus: Alt+P/D/V/W (and F10) open them; arrows move,
+    /// Keyboard for the menus: Alt+P/D/V/W/H (and F10) open them; arrows move,
     /// Enter/Space choose, Esc closes. Returns true while a menu is open.
     fn menu_keys(&mut self, ctx: &egui::Context) -> bool {
-        for (k, i) in [(Key::P, 0usize), (Key::D, 1), (Key::V, 2), (Key::W, 3)] {
+        for (k, i) in [(Key::P, 0usize), (Key::D, 1), (Key::V, 2), (Key::W, 3), (Key::H, 4)] {
             if ctx.input_mut(|inp| inp.consume_key(Modifiers::ALT, k)) {
                 self.open_menu_by_key(ctx, i);
             }
@@ -6387,6 +6404,59 @@ impl UmlApp {
         self.job_progress(ctx);
         self.update_dialogs(ctx);
         self.confirm_dialogs(ctx);
+        self.about_dialog(ctx);
+    }
+
+    /// Help > About NapkinUML: the icon, the version, the licence and the project's site.
+    fn about_dialog(&mut self, ctx: &egui::Context) {
+        if !self.about_open {
+            return;
+        }
+        let lang = self.settings.language;
+        let t = |s: &'static str| tr(lang, s);
+        if self.about_icon.is_none() {
+            let bytes: &[u8] = include_bytes!("../icons/napkin-uml-256.png");
+            if let Ok(img) = image::load_from_memory_with_format(bytes, image::ImageFormat::Png) {
+                let img = img.to_rgba8();
+                let size = [img.width() as usize, img.height() as usize];
+                let color = egui::ColorImage::from_rgba_unmultiplied(size, img.as_raw());
+                self.about_icon = Some(ctx.load_texture("about_icon", color, egui::TextureOptions::LINEAR));
+            }
+        }
+        let mut open = true;
+        let mut close = esc_cancels(ctx);
+        egui::Window::new(t("About NapkinUML"))
+            .id(egui::Id::new("about_dialog"))
+            .collapsible(false)
+            .resizable(false)
+            .anchor(Align2::CENTER_CENTER, [0.0, 0.0])
+            .open(&mut open)
+            .show(ctx, |ui| {
+                ui.set_width(360.0);
+                ui.vertical_centered(|ui| {
+                    ui.add_space(6.0);
+                    if let Some(tex) = &self.about_icon {
+                        ui.add(egui::Image::new((tex.id(), Vec2::splat(96.0))));
+                    }
+                    ui.add_space(8.0);
+                    ui.label(egui::RichText::new(format!("NapkinUML {}", env!("CARGO_PKG_VERSION"))).size(20.0).strong());
+                    ui.add_space(10.0);
+                    ui.label(format!("{} {}", t("License:"), env!("CARGO_PKG_LICENSE")));
+                    ui.label(egui::RichText::new(t("Use it under either the MIT or the Apache 2.0 license.")).weak());
+                    ui.add_space(10.0);
+                    let site = env!("CARGO_PKG_REPOSITORY");
+                    ui.label(t("GitHub:"));
+                    ui.hyperlink_to(site, site);
+                    ui.add_space(12.0);
+                    if ui.button(format!("   {}   ", t("OK"))).clicked() {
+                        close = true;
+                    }
+                    ui.add_space(4.0);
+                });
+            });
+        if !open || close {
+            self.about_open = false;
+        }
     }
 
     fn new_diagram_dialog(&mut self, ctx: &egui::Context) {
