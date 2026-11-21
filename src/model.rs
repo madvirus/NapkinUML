@@ -463,10 +463,10 @@ pub struct Shape {
     /// Hide the small component icon in a Component's corner.
     #[serde(default)]
     pub hide_icon: bool,
-    /// Hide this class's attribute compartment.
+    /// Hide this class's (or interface's) attribute compartment.
     #[serde(default)]
     pub hide_attributes: bool,
-    /// Hide this class's operation compartment.
+    /// Hide this class's (or interface's) operation compartment.
     #[serde(default)]
     pub hide_operations: bool,
     /// Sequence lifelines: heights (diagram units) where the user split its activation; an

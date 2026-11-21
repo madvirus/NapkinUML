@@ -4,8 +4,8 @@ use super::*;
 
 impl UmlApp {
     pub(super) fn canvas_input(&mut self, ui: &mut egui::Ui, resp: &egui::Response, cam: &Cam, d: &Diagram) {
-        if self.screenshot.is_some() {
-            // a check run must not react to the person's mouse
+        if self.screenshot.is_some() && self.player.is_none() {
+            // a check run must not react to the person's mouse (a NAPKINUML_PLAY run feeds its own)
             return;
         }
         let ctx = ui.ctx().clone();

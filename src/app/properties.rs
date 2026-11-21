@@ -337,8 +337,8 @@ impl UmlApp {
                 }
                 ui.end_row();
             }
-            if s.kind == ShapeKind::Class {
-                // per-class: hide the attribute and/or operation compartment
+            if matches!(s.kind, ShapeKind::Class | ShapeKind::Interface) {
+                // per class or interface: hide the attribute and/or operation compartment
                 ui.label(tr(lang, "Attributes"));
                 let mut hide = s.hide_attributes;
                 if ui.checkbox(&mut hide, tr(lang, "Hide")).changed() {
@@ -495,7 +495,7 @@ impl UmlApp {
                 self.fonts.request_refresh();
             }
             if f == 14 {
-                // hiding or showing a compartment fits the class height to what is left
+                // hiding or showing a compartment fits the class (or interface) height to what is left
                 let opts = self.project.as_ref().map(|p| p.options.clone()).unwrap_or_default();
                 s.h = render::min_size(ui.ctx(), &s, &opts, &self.look()).y.max(30.0);
             }
