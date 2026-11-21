@@ -15,7 +15,7 @@
 //! * stretches the user dragged out (an activation's top or bottom handle) are added, and
 //!   activations of one lifeline at the same depth that overlap or touch become one.
 
-use crate::model::{ConnKind, Connector, Diagram, DiagramKind, ProjectOptions, Shape};
+use crate::model::{ConnKind, Connector, Diagram, DiagramKind, ProjectOptions, Shape, ShapeKind};
 use std::collections::HashMap;
 
 /// Half width of an activation bar and the sideways step of a nested one.
@@ -381,4 +381,194 @@ pub fn all_paths(d: &Diagram, opts: &ProjectOptions) -> (SeqLayout, HashMap<u64,
         }
     }
     (lay, map)
+}
+
+/// The activation bar under a point (diagram units) of a sequence diagram, innermost first.
+pub fn bar_at(d: &Diagram, opts: &ProjectOptions, zoom: f32, (x, y): (f32, f32)) -> Option<Bar> {
+    if d.kind != DiagramKind::Sequence || !opts.show_activations {
+        return None;
+    }
+    let slack = 4.0 / zoom.max(0.1);
+    let lay = layout(d, opts);
+    lay.bars
+        .iter()
+        .filter(|b| y >= b.y0 && y <= b.y1)
+        .filter(|b| {
+            d.shape(b.lifeline).map(|s| {
+                let cx = s.x + s.w / 2.0 + b.depth as f32 * BAR_STEP;
+                (x - cx).abs() <= BAR_HALF + slack
+            }).unwrap_or(false)
+        })
+        .max_by_key(|b| b.depth)
+        .cloned()
+}
+
+/// Move an activation's top or bottom edge to height `ny`. Stretching out adds a stretch
+/// (which joins any activation it reaches); pulling the bottom in ends it there with a split;
+/// pulling the top back in only takes back stretches (a bar can't start after its message).
+pub fn stretch_activation(s: &mut Shape, depth: usize, top: bool, y0: f32, y1: f32, ny: f32) {
+    let dep = depth as f32;
+    if top {
+        let ny = ny.min(y1 - 10.0);
+        if ny < y0 {
+            s.act_spans.push([ny, y0 + 1.0, dep]);
+        } else {
+            for sp in s.act_spans.iter_mut().filter(|sp| sp[2] == dep && sp[0] < ny && sp[1] > y0 - 0.5) {
+                sp[0] = ny;
+            }
+        }
+    } else {
+        let ny = ny.max(y0 + 10.0);
+        if ny > y1 {
+            s.act_spans.push([y1 - 1.0, ny, dep]);
+        } else {
+            for sp in s.act_spans.iter_mut().filter(|sp| sp[2] == dep && sp[1] > ny && sp[0] < y1 + 0.5) {
+                sp[1] = ny;
+            }
+            if ny < y1 - 0.5 {
+                s.splits.push(ny);
+                s.splits.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+            }
+        }
+    }
+    s.act_spans.retain(|sp| sp[1] - sp[0] > 0.5);
+}
+
+/// What a right-click at this point (diagram units) touches in a sequence diagram: the
+/// lifeline, the height, whether it is on an activation bar, and a split point near it.
+pub fn seq_menu_target(d: &Diagram, opts: &ProjectOptions, zoom: f32, (x, y): (f32, f32)) -> Option<(u64, f32, bool, Option<f32>)> {
+    if d.kind != DiagramKind::Sequence {
+        return None;
+    }
+    let lay = layout(d, opts);
+    let slack = 4.0 / zoom.max(0.1);
+    let bar = lay.bars.iter().filter(|b| y >= b.y0 && y <= b.y1).find(|b| {
+        d.shape(b.lifeline).map(|s| {
+            let cx = s.x + s.w / 2.0 + b.depth as f32 * BAR_STEP;
+            opts.show_activations && (x - cx).abs() <= BAR_HALF + slack
+        }).unwrap_or(false)
+    });
+    let line = d.shapes.iter().filter(|s| s.kind.is_lifeline() && y > s.y && y < s.y + s.h).find(|s| (x - (s.x + s.w / 2.0)).abs() <= BAR_HALF + 3.0 * BAR_STEP + slack);
+    let lid = bar.map(|b| b.lifeline).or(line.map(|s| s.id))?;
+    let near = d.shape(lid).and_then(|s| s.splits.iter().copied().filter(|v| (v - y).abs() <= 12.0 / zoom.max(0.1)).min_by(|a, b| (a - y).abs().partial_cmp(&(b - y).abs()).unwrap_or(std::cmp::Ordering::Equal)));
+    Some((lid, y, bar.is_some(), near))
+}
+
+/// In a sequence diagram the lifelines and actors along the top move only sideways, so they
+/// stay lined up; a lifeline made by a Create message sits at that message instead.
+pub fn y_locked(d: &Diagram, s: &Shape) -> bool {
+    d.kind == DiagramKind::Sequence && s.kind.is_lifeline() && !is_created(d, s.id)
+}
+
+/// The lifeline is the target of a Create message.
+pub fn is_created(d: &Diagram, id: u64) -> bool {
+    d.connectors.iter().any(|c| c.kind == ConnKind::CreateMessage && c.to == id)
+}
+
+/// Height of a lifeline's head box (where a Create message meets it in the middle).
+pub fn lifeline_head(kind: ShapeKind) -> f32 {
+    if kind == ShapeKind::Lifeline { 40.0 } else { 70.0 }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::model::{Project, NAV_TRUE};
+
+    fn lifeline(id: u64) -> Shape {
+        Shape::new(id, ShapeKind::Lifeline, id as f32 * 150.0, 20.0, 100.0, 400.0)
+    }
+
+    fn message(id: u64, kind: ConnKind, from: u64, to: u64, y: f32) -> Connector {
+        Connector {
+            id,
+            kind,
+            from,
+            to,
+            name: String::new(),
+            from_label: String::new(),
+            to_label: String::new(),
+            y,
+            documentation: String::new(),
+            points: vec![],
+            arrow_start: false,
+            arrow_end: false,
+            style: 3,
+            nav_from: NAV_TRUE,
+            nav_to: NAV_TRUE,
+            seq_no: String::new(),
+            from_label_offset: (0.0, 0.0),
+            to_label_offset: (0.0, 0.0),
+            label_offset: (0.0, 0.0),
+            from_anchor: None,
+            to_anchor: None,
+        }
+    }
+
+    fn diagram(kind: DiagramKind, shapes: Vec<Shape>, connectors: Vec<Connector>) -> Diagram {
+        let mut p = Project::new("t");
+        let did = p.add_diagram(kind, None);
+        let mut d = p.diagram_mut(did).unwrap().clone();
+        d.shapes = shapes;
+        d.connectors = connectors;
+        d
+    }
+
+    #[test]
+    fn stretching_an_activation() {
+        let mut s = lifeline(1);
+        stretch_activation(&mut s, 0, true, 100.0, 200.0, 50.0);
+        assert_eq!(s.act_spans, vec![[50.0, 101.0, 0.0]]);
+
+        let mut s = lifeline(1);
+        stretch_activation(&mut s, 1, false, 100.0, 200.0, 250.0);
+        assert_eq!(s.act_spans, vec![[199.0, 250.0, 1.0]]);
+
+        // pulling the bottom in ends the activation there with a split
+        let mut s = lifeline(1);
+        stretch_activation(&mut s, 0, false, 100.0, 200.0, 150.0);
+        assert!(s.act_spans.is_empty());
+        assert_eq!(s.splits, vec![150.0]);
+
+        // never shorter than 10
+        let mut s = lifeline(1);
+        stretch_activation(&mut s, 0, false, 100.0, 200.0, 0.0);
+        assert_eq!(s.splits, vec![110.0]);
+    }
+
+    #[test]
+    fn created_lifelines_are_not_y_locked() {
+        let d = diagram(DiagramKind::Sequence, vec![lifeline(1), lifeline(2), lifeline(3)], vec![message(10, ConnKind::CreateMessage, 1, 2, 150.0), message(11, ConnKind::Message, 1, 3, 200.0)]);
+        assert!(!is_created(&d, 1));
+        assert!(is_created(&d, 2));
+        assert!(!is_created(&d, 3));
+        assert!(y_locked(&d, &d.shapes[0]));
+        assert!(!y_locked(&d, &d.shapes[1]));
+        assert!(y_locked(&d, &d.shapes[2]));
+        let c = diagram(DiagramKind::Class, vec![lifeline(1)], vec![]);
+        assert!(!y_locked(&c, &c.shapes[0]));
+    }
+
+    #[test]
+    fn lifeline_head_heights() {
+        assert_eq!(lifeline_head(ShapeKind::Lifeline), 40.0);
+        assert_eq!(lifeline_head(ShapeKind::ActorLifeline), 70.0);
+    }
+
+    #[test]
+    fn bar_at_finds_the_activation_under_a_point() {
+        let d = diagram(DiagramKind::Sequence, vec![lifeline(1), lifeline(2)], vec![message(10, ConnKind::Message, 1, 2, 150.0)]);
+        let opts = ProjectOptions::default();
+        let lay = layout(&d, &opts);
+        let b = lay.bars.iter().find(|b| b.lifeline == 2).expect("the receiver is activated").clone();
+        let s = d.shape(2).unwrap();
+        let cx = s.x + s.w / 2.0;
+        let mid = (b.y0 + b.y1) / 2.0;
+        assert_eq!(bar_at(&d, &opts, 1.0, (cx, mid)).map(|b| b.lifeline), Some(2));
+        assert!(bar_at(&d, &opts, 1.0, (cx + 40.0, mid)).is_none());
+        let off = ProjectOptions { show_activations: false, ..ProjectOptions::default() };
+        assert!(bar_at(&d, &off, 1.0, (cx, mid)).is_none());
+        let t = seq_menu_target(&d, &opts, 1.0, (cx, mid)).unwrap();
+        assert_eq!((t.0, t.2), (2, true));
+    }
 }

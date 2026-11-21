@@ -520,6 +520,35 @@ pub const PART_MIN: f32 = 30.0;
 pub const ALT_HEAD: f32 = 34.0;
 
 impl Shape {
+    /// A shape with no name, text or styling: everything but its kind and place left empty.
+    pub fn new(id: u64, kind: ShapeKind, x: f32, y: f32, w: f32, h: f32) -> Self {
+        Shape {
+            id,
+            kind,
+            x,
+            y,
+            w,
+            h,
+            name: String::new(),
+            stereotype: String::new(),
+            attributes: Vec::new(),
+            operations: Vec::new(),
+            fill: None,
+            documentation: String::new(),
+            font: None,
+            font_size: None,
+            orient: 0,
+            hide_icon: false,
+            hide_attributes: false,
+            hide_operations: false,
+            splits: Vec::new(),
+            act_spans: Vec::new(),
+            dividers: None,
+            partitions: None,
+            label_offset: (0.0, 0.0),
+        }
+    }
+
     /// The section lines of an alternative fragment, top to bottom.
     pub fn alt_dividers(&self) -> Vec<Divider> {
         match &self.dividers {
@@ -1194,29 +1223,10 @@ impl<'a> Builder<'a> {
         let id = self.p.fresh_id();
         let d = self.p.diagram_mut(self.did).unwrap();
         d.shapes.push(Shape {
-            id,
-            kind,
-            x,
-            y,
-            w,
-            h,
             name: name.to_string(),
-            stereotype: String::new(),
             attributes: attrs.iter().map(|s| s.to_string()).collect(),
             operations: ops.iter().map(|s| s.to_string()).collect(),
-            fill: None,
-            documentation: String::new(),
-            font: None,
-            font_size: None,
-            orient: 0,
-            hide_icon: false,
-            hide_attributes: false,
-            hide_operations: false,
-            splits: Vec::new(),
-            act_spans: Vec::new(),
-            dividers: None,
-            partitions: None,
-            label_offset: (0.0, 0.0),
+            ..Shape::new(id, kind, x, y, w, h)
         });
         id
     }
@@ -1288,5 +1298,265 @@ impl<'a> Builder<'a> {
             from_anchor: None,
             to_anchor: None,
         });
+    }
+}
+
+/// When a line is drawn between two side-by-side (or stacked) boxes and the drag starts
+/// away from the middle of the box, the line runs straight across at that height (or
+/// position): both ends are fixed there. Starting near the middle leaves the ends free.
+pub fn press_lane(a: &Shape, b: &Shape, press: (f32, f32)) -> Option<((f32, f32), (f32, f32))> {
+    let boxy = |s: &Shape| s.kind.is_network_device() || !(s.kind.is_pseudo() || matches!(s.kind, ShapeKind::UseCase | ShapeKind::Collaboration | ShapeKind::Choice | ShapeKind::Decision | ShapeKind::Merge));
+    if !boxy(a) || !boxy(b) {
+        return None;
+    }
+    if a.x + a.w <= b.x || b.x + b.w <= a.x {
+        let (lo, hi) = (a.y.max(b.y), (a.y + a.h).min(b.y + b.h));
+        if hi - lo < 8.0 || (press.1 - (a.y + a.h / 2.0)).abs() < a.h * 0.15 {
+            return None;
+        }
+        let y = press.1.clamp(lo + 3.0, hi - 3.0);
+        let a_left = a.x + a.w <= b.x;
+        return Some(((if a_left { 1.0 } else { 0.0 }, (y - a.y) / a.h), (if a_left { 0.0 } else { 1.0 }, (y - b.y) / b.h)));
+    }
+    if a.y + a.h <= b.y || b.y + b.h <= a.y {
+        let (lo, hi) = (a.x.max(b.x), (a.x + a.w).min(b.x + b.w));
+        if hi - lo < 8.0 || (press.0 - (a.x + a.w / 2.0)).abs() < a.w * 0.15 {
+            return None;
+        }
+        let x = press.0.clamp(lo + 3.0, hi - 3.0);
+        let a_top = a.y + a.h <= b.y;
+        return Some((((x - a.x) / a.w, if a_top { 1.0 } else { 0.0 }), ((x - b.x) / b.w, if a_top { 0.0 } else { 1.0 })));
+    }
+    None
+}
+
+/// Shapes that ports attach to.
+pub fn takes_ports(k: ShapeKind) -> bool {
+    matches!(k, ShapeKind::Component | ShapeKind::Node | ShapeKind::Device | ShapeKind::ExecutionEnvironment | ShapeKind::Class | ShapeKind::Instance)
+}
+
+/// Ports sitting on (or inside) a shape's outline: their centre is within half a port of it.
+pub fn attached_ports(d: &Diagram, owner: &Shape) -> Vec<u64> {
+    if !takes_ports(owner.kind) {
+        return vec![];
+    }
+    d.shapes
+        .iter()
+        .filter(|p| p.kind == ShapeKind::Port && p.id != owner.id)
+        .filter(|p| {
+            let (cx, cy) = p.center();
+            let m = p.w.max(p.h) / 2.0 + 2.0;
+            cx >= owner.x - m && cx <= owner.x + owner.w + m && cy >= owner.y - m && cy <= owner.y + owner.h + m
+        })
+        .map(|p| p.id)
+        .collect()
+}
+
+pub fn is_interface_end(k: ShapeKind) -> bool {
+    matches!(k, ShapeKind::ProvidedInterface | ShapeKind::RequiredInterface)
+}
+
+pub fn opposite_interface(a: ShapeKind, b: ShapeKind) -> bool {
+    is_interface_end(a) && is_interface_end(b) && a != b
+}
+
+/// A provided interface (ball) and a required interface (socket) whose centres sit on each
+/// other are joined: the ball rests in the socket and they move as one.
+pub fn joined_interfaces(d: &Diagram, s: &Shape) -> Vec<u64> {
+    if !is_interface_end(s.kind) {
+        return vec![];
+    }
+    let (cx, cy) = s.center();
+    d.shapes
+        .iter()
+        .filter(|o| o.id != s.id && opposite_interface(s.kind, o.kind))
+        .filter(|o| {
+            let (ox, oy) = o.center();
+            (ox - cx).abs() <= 1.5 && (oy - cy).abs() <= 1.5
+        })
+        .map(|o| o.id)
+        .collect()
+}
+
+/// The smallest port-taking shape near a port (its outline within 12 px of the port centre).
+pub fn port_owner(d: &Diagram, port: &Shape) -> Option<u64> {
+    let (cx, cy) = port.center();
+    d.shapes
+        .iter()
+        .filter(|s| takes_ports(s.kind) && s.id != port.id)
+        .filter(|s| cx >= s.x - 12.0 && cx <= s.x + s.w + 12.0 && cy >= s.y - 12.0 && cy <= s.y + s.h + 12.0)
+        .min_by(|a, b| (a.w * a.h).partial_cmp(&(b.w * b.h)).unwrap_or(std::cmp::Ordering::Equal))
+        .map(|s| s.id)
+}
+
+/// Put a port's centre on the nearest edge of its owner.
+pub fn snap_port(port: &mut Shape, owner: &Shape) {
+    let (cx, cy) = port.center();
+    let x = cx.clamp(owner.x, owner.x + owner.w);
+    let y = cy.clamp(owner.y, owner.y + owner.h);
+    let dl = (x - owner.x).abs();
+    let dr = (owner.x + owner.w - x).abs();
+    let dt = (y - owner.y).abs();
+    let db = (owner.y + owner.h - y).abs();
+    let m = dl.min(dr).min(dt).min(db);
+    let (nx, ny) = if m == dl {
+        (owner.x, y)
+    } else if m == dr {
+        (owner.x + owner.w, y)
+    } else if m == dt {
+        (x, owner.y)
+    } else {
+        (x, owner.y + owner.h)
+    };
+    port.x = nx - port.w / 2.0;
+    port.y = ny - port.h / 2.0;
+}
+
+/// Move a section line of an alternative fragment to height `ny` (diagram units), keeping it
+/// 20 below the line above (or below the fragment's tab) and 20 above the line below (10 above
+/// the bottom for the last).
+pub fn set_divider(s: &mut Shape, idx: usize, ny: f32) {
+    let mut v = s.alt_dividers();
+    if idx < v.len() {
+        let lo = if idx == 0 { ALT_HEAD } else { v[idx - 1].y + 20.0 };
+        let hi = if idx + 1 < v.len() { v[idx + 1].y - 20.0 } else { s.h - 10.0 };
+        v[idx].y = (ny - s.y).clamp(lo, hi.max(lo));
+        s.dividers = Some(v);
+    }
+}
+
+/// Move what stands inside a swimlane (as it was before a change) beyond a distance along it
+/// by `delta`: shapes whose middle is past it and bend points past it.
+pub fn shift_lane_contents(dm: &mut Diagram, lane: &Shape, from: f32, delta: f32) {
+    let vertical = lane.kind != ShapeKind::HorizontalSwimlane;
+    let cut = if vertical { lane.x + from } else { lane.y + from };
+    let inside = |x: f32, y: f32| x >= lane.x && x <= lane.x + lane.w && y >= lane.y && y <= lane.y + lane.h;
+    let beyond = |x: f32, y: f32| if vertical { x >= cut } else { y >= cut };
+    for s in dm.shapes.iter_mut().filter(|s| s.id != lane.id && !s.kind.is_swimlane()) {
+        let (cx, cy) = s.center();
+        if inside(cx, cy) && beyond(cx, cy) {
+            if vertical {
+                s.x += delta;
+            } else {
+                s.y += delta;
+            }
+        }
+    }
+    for c in dm.connectors.iter_mut() {
+        for q in c.points.iter_mut() {
+            if inside(q.0, q.1) && beyond(q.0, q.1) {
+                if vertical {
+                    q.0 += delta;
+                } else {
+                    q.1 += delta;
+                }
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn diagram(kind: DiagramKind, shapes: Vec<Shape>) -> Diagram {
+        let mut p = Project::new("t");
+        let did = p.add_diagram(kind, None);
+        let mut d = p.diagram_mut(did).unwrap().clone();
+        d.shapes = shapes;
+        d
+    }
+
+    #[test]
+    fn port_owner_is_the_smallest_shape_near_the_port() {
+        let d = diagram(DiagramKind::Component, vec![
+            Shape::new(1, ShapeKind::Component, 0.0, 0.0, 200.0, 200.0),
+            Shape::new(2, ShapeKind::Class, 50.0, 50.0, 60.0, 60.0),
+            Shape::new(3, ShapeKind::Port, 45.0, 45.0, 10.0, 10.0),
+            Shape::new(4, ShapeKind::Port, 500.0, 500.0, 10.0, 10.0),
+        ]);
+        assert_eq!(port_owner(&d, &d.shapes[2]), Some(2));
+        assert_eq!(port_owner(&d, &d.shapes[3]), None);
+    }
+
+    #[test]
+    fn snap_port_moves_to_the_nearest_edge() {
+        let owner = Shape::new(1, ShapeKind::Component, 0.0, 0.0, 100.0, 100.0);
+        let mut port = Shape::new(2, ShapeKind::Port, 5.0, 40.0, 10.0, 10.0);
+        snap_port(&mut port, &owner);
+        assert_eq!((port.x, port.y), (-5.0, 40.0));
+        let mut port = Shape::new(3, ShapeKind::Port, 40.0, 88.0, 10.0, 10.0);
+        snap_port(&mut port, &owner);
+        assert_eq!((port.x, port.y), (40.0, 95.0));
+    }
+
+    #[test]
+    fn attached_ports_only_on_port_taking_shapes() {
+        let d = diagram(DiagramKind::Component, vec![
+            Shape::new(1, ShapeKind::Component, 0.0, 0.0, 100.0, 100.0),
+            Shape::new(2, ShapeKind::Note, 0.0, 0.0, 100.0, 100.0),
+            Shape::new(3, ShapeKind::Port, 95.0, 40.0, 10.0, 10.0),
+            Shape::new(4, ShapeKind::Port, 300.0, 40.0, 10.0, 10.0),
+        ]);
+        assert_eq!(attached_ports(&d, &d.shapes[0]), vec![3]);
+        assert!(attached_ports(&d, &d.shapes[1]).is_empty());
+    }
+
+    #[test]
+    fn ball_and_socket_on_each_other_are_joined() {
+        let d = diagram(DiagramKind::Component, vec![
+            Shape::new(1, ShapeKind::ProvidedInterface, 0.0, 0.0, 20.0, 20.0),
+            Shape::new(2, ShapeKind::RequiredInterface, 0.0, 0.0, 20.0, 20.0),
+            Shape::new(3, ShapeKind::ProvidedInterface, 0.0, 0.0, 20.0, 20.0),
+            Shape::new(4, ShapeKind::RequiredInterface, 50.0, 0.0, 20.0, 20.0),
+        ]);
+        assert_eq!(joined_interfaces(&d, &d.shapes[0]), vec![2]);
+        assert_eq!(joined_interfaces(&d, &d.shapes[1]), vec![1, 3]);
+        assert!(joined_interfaces(&d, &d.shapes[3]).is_empty());
+        assert!(opposite_interface(ShapeKind::ProvidedInterface, ShapeKind::RequiredInterface));
+        assert!(!opposite_interface(ShapeKind::ProvidedInterface, ShapeKind::ProvidedInterface));
+        assert!(!opposite_interface(ShapeKind::Class, ShapeKind::RequiredInterface));
+    }
+
+    #[test]
+    fn press_lane_runs_straight_across_away_from_the_middle() {
+        let a = Shape::new(1, ShapeKind::Class, 0.0, 0.0, 100.0, 60.0);
+        let b = Shape::new(2, ShapeKind::Class, 200.0, 0.0, 100.0, 60.0);
+        assert_eq!(press_lane(&a, &b, (50.0, 30.0)), None);
+        let (fa, fb) = press_lane(&a, &b, (50.0, 12.0)).unwrap();
+        assert_eq!(fa, (1.0, 0.2));
+        assert_eq!(fb, (0.0, 0.2));
+        let (fa, fb) = press_lane(&b, &a, (250.0, 12.0)).unwrap();
+        assert_eq!((fa.0, fb.0), (0.0, 1.0));
+        let u = Shape::new(3, ShapeKind::UseCase, 200.0, 0.0, 100.0, 60.0);
+        assert_eq!(press_lane(&a, &u, (50.0, 12.0)), None);
+    }
+
+    #[test]
+    fn set_divider_keeps_lines_apart() {
+        let mut s = Shape::new(1, ShapeKind::AltFragment, 0.0, 100.0, 300.0, 200.0);
+        s.dividers = Some(vec![Divider { y: 80.0, guard: String::new() }, Divider { y: 140.0, guard: String::new() }]);
+        set_divider(&mut s, 0, 110.0);
+        assert_eq!(s.alt_dividers()[0].y, ALT_HEAD);
+        set_divider(&mut s, 0, 300.0);
+        assert_eq!(s.alt_dividers()[0].y, 120.0);
+        set_divider(&mut s, 1, 1000.0);
+        assert_eq!(s.alt_dividers()[1].y, 190.0);
+        set_divider(&mut s, 5, 150.0);
+        assert_eq!(s.alt_dividers().len(), 2);
+    }
+
+    #[test]
+    fn shift_lane_contents_moves_only_what_is_beyond() {
+        let lane = Shape::new(1, ShapeKind::VerticalSwimlane, 0.0, 0.0, 300.0, 200.0);
+        let mut d = diagram(DiagramKind::Activity, vec![
+            lane.clone(),
+            Shape::new(2, ShapeKind::Action, 30.0, 30.0, 40.0, 40.0),
+            Shape::new(3, ShapeKind::Action, 230.0, 30.0, 40.0, 40.0),
+            Shape::new(4, ShapeKind::Action, 530.0, 30.0, 40.0, 40.0),
+        ]);
+        shift_lane_contents(&mut d, &lane, 150.0, 40.0);
+        let xs: Vec<f32> = d.shapes.iter().map(|s| s.x).collect();
+        assert_eq!(xs, vec![0.0, 30.0, 270.0, 530.0]);
     }
 }

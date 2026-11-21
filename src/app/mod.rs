@@ -2,6 +2,9 @@
 
 use crate::i18n::{tr, Language};
 use crate::model::{ConnKind, Connector, Diagram, DiagramKind, ErdNotation, Folder, Project, ProjectOptions, Shape, ShapeKind};
+use crate::model::{attached_ports, is_interface_end, joined_interfaces, opposite_interface, port_owner, press_lane, set_divider, shift_lane_contents, snap_port};
+use crate::seq::{bar_at, lifeline_head, seq_menu_target, stretch_activation, y_locked};
+use crate::conn_create::{counts_as_empty, pick_choices, pick_default};
 use crate::palette::{self, Tool};
 use crate::render::{self, Cam, Look};
 use crate::settings::Settings;
@@ -26,7 +29,6 @@ mod dialogs;
 mod screenshot;
 use project::*;
 use updater::*;
-use edit::*;
 use export::*;
 use menu::*;
 use navigator::*;

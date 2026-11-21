@@ -2,20 +2,6 @@
 
 use super::*;
 
-/// Save a picture as PNG, JPEG (quality 92) or lossless WebP, by the file's extension.
-/// Move a section line of an alternative fragment to height `ny` (diagram units), keeping it
-/// 20 below the line above (or below the fragment's tab) and 20 above the line below (10 above
-/// the bottom for the last).
-pub(super) fn set_divider(s: &mut Shape, idx: usize, ny: f32) {
-    let mut v = s.alt_dividers();
-    if idx < v.len() {
-        let lo = if idx == 0 { crate::model::ALT_HEAD } else { v[idx - 1].y + 20.0 };
-        let hi = if idx + 1 < v.len() { v[idx + 1].y - 20.0 } else { s.h - 10.0 };
-        v[idx].y = (ny - s.y).clamp(lo, hi.max(lo));
-        s.dividers = Some(v);
-    }
-}
-
 /// The line between two partitions of a swimlane under a screen point: (swimlane, index of the
 /// partition before the line).
 pub(super) fn partition_edge_at(d: &Diagram, cam: &Cam, p: Pos2) -> Option<(u64, usize)> {
@@ -35,36 +21,6 @@ pub(super) fn partition_edge_at(d: &Diagram, cam: &Cam, p: Pos2) -> Option<(u64,
     None
 }
 
-/// Move what stands inside a swimlane (as it was before a change) beyond a distance along it
-/// by `delta`: shapes whose middle is past it and bend points past it.
-pub(super) fn shift_lane_contents(dm: &mut Diagram, lane: &Shape, from: f32, delta: f32) {
-    let vertical = lane.kind != ShapeKind::HorizontalSwimlane;
-    let cut = if vertical { lane.x + from } else { lane.y + from };
-    let inside = |x: f32, y: f32| x >= lane.x && x <= lane.x + lane.w && y >= lane.y && y <= lane.y + lane.h;
-    let beyond = |x: f32, y: f32| if vertical { x >= cut } else { y >= cut };
-    for s in dm.shapes.iter_mut().filter(|s| s.id != lane.id && !s.kind.is_swimlane()) {
-        let (cx, cy) = s.center();
-        if inside(cx, cy) && beyond(cx, cy) {
-            if vertical {
-                s.x += delta;
-            } else {
-                s.y += delta;
-            }
-        }
-    }
-    for c in dm.connectors.iter_mut() {
-        for q in c.points.iter_mut() {
-            if inside(q.0, q.1) && beyond(q.0, q.1) {
-                if vertical {
-                    q.0 += delta;
-                } else {
-                    q.1 += delta;
-                }
-            }
-        }
-    }
-}
-
 /// The section line of an alternative fragment under a screen point: (fragment, line index,
 /// its height in diagram units).
 pub(super) fn divider_at(d: &Diagram, cam: &Cam, p: Pos2) -> Option<(u64, usize, f32)> {
@@ -81,93 +37,6 @@ pub(super) fn divider_at(d: &Diagram, cam: &Cam, p: Pos2) -> Option<(u64, usize,
         }
     }
     None
-}
-
-/// The activation bar under a point (diagram units) of a sequence diagram, innermost first.
-pub(super) fn bar_at(d: &Diagram, opts: &crate::model::ProjectOptions, zoom: f32, (x, y): (f32, f32)) -> Option<crate::seq::Bar> {
-    if d.kind != DiagramKind::Sequence || !opts.show_activations {
-        return None;
-    }
-    let slack = 4.0 / zoom.max(0.1);
-    let lay = crate::seq::layout(d, opts);
-    lay.bars
-        .iter()
-        .filter(|b| y >= b.y0 && y <= b.y1)
-        .filter(|b| {
-            d.shape(b.lifeline).map(|s| {
-                let cx = s.x + s.w / 2.0 + b.depth as f32 * crate::seq::BAR_STEP;
-                (x - cx).abs() <= crate::seq::BAR_HALF + slack
-            }).unwrap_or(false)
-        })
-        .max_by_key(|b| b.depth)
-        .cloned()
-}
-
-/// Move an activation's top or bottom edge to height `ny`. Stretching out adds a stretch
-/// (which joins any activation it reaches); pulling the bottom in ends it there with a split;
-/// pulling the top back in only takes back stretches (a bar can't start after its message).
-pub(super) fn stretch_activation(s: &mut Shape, depth: usize, top: bool, y0: f32, y1: f32, ny: f32) {
-    let dep = depth as f32;
-    if top {
-        let ny = ny.min(y1 - 10.0);
-        if ny < y0 {
-            s.act_spans.push([ny, y0 + 1.0, dep]);
-        } else {
-            for sp in s.act_spans.iter_mut().filter(|sp| sp[2] == dep && sp[0] < ny && sp[1] > y0 - 0.5) {
-                sp[0] = ny;
-            }
-        }
-    } else {
-        let ny = ny.max(y0 + 10.0);
-        if ny > y1 {
-            s.act_spans.push([y1 - 1.0, ny, dep]);
-        } else {
-            for sp in s.act_spans.iter_mut().filter(|sp| sp[2] == dep && sp[1] > ny && sp[0] < y1 + 0.5) {
-                sp[1] = ny;
-            }
-            if ny < y1 - 0.5 {
-                s.splits.push(ny);
-                s.splits.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
-            }
-        }
-    }
-    s.act_spans.retain(|sp| sp[1] - sp[0] > 0.5);
-}
-
-/// What a right-click at this point (diagram units) touches in a sequence diagram: the
-/// lifeline, the height, whether it is on an activation bar, and a split point near it.
-pub(super) fn seq_menu_target(d: &Diagram, opts: &crate::model::ProjectOptions, zoom: f32, (x, y): (f32, f32)) -> Option<(u64, f32, bool, Option<f32>)> {
-    if d.kind != DiagramKind::Sequence {
-        return None;
-    }
-    let lay = crate::seq::layout(d, opts);
-    let slack = 4.0 / zoom.max(0.1);
-    let bar = lay.bars.iter().filter(|b| y >= b.y0 && y <= b.y1).find(|b| {
-        d.shape(b.lifeline).map(|s| {
-            let cx = s.x + s.w / 2.0 + b.depth as f32 * crate::seq::BAR_STEP;
-            opts.show_activations && (x - cx).abs() <= crate::seq::BAR_HALF + slack
-        }).unwrap_or(false)
-    });
-    let line = d.shapes.iter().filter(|s| s.kind.is_lifeline() && y > s.y && y < s.y + s.h).find(|s| (x - (s.x + s.w / 2.0)).abs() <= crate::seq::BAR_HALF + 3.0 * crate::seq::BAR_STEP + slack);
-    let lid = bar.map(|b| b.lifeline).or(line.map(|s| s.id))?;
-    let near = d.shape(lid).and_then(|s| s.splits.iter().copied().filter(|v| (v - y).abs() <= 12.0 / zoom.max(0.1)).min_by(|a, b| (a - y).abs().partial_cmp(&(b - y).abs()).unwrap_or(std::cmp::Ordering::Equal)));
-    Some((lid, y, bar.is_some(), near))
-}
-
-/// In a sequence diagram the lifelines and actors along the top move only sideways, so they
-/// stay lined up; a lifeline made by a Create message sits at that message instead.
-pub(super) fn y_locked(d: &Diagram, s: &Shape) -> bool {
-    d.kind == DiagramKind::Sequence && s.kind.is_lifeline() && !is_created(d, s.id)
-}
-
-/// The lifeline is the target of a Create message.
-pub(super) fn is_created(d: &Diagram, id: u64) -> bool {
-    d.connectors.iter().any(|c| c.kind == ConnKind::CreateMessage && c.to == id)
-}
-
-/// Height of a lifeline's head box (where a Create message meets it in the middle).
-pub(super) fn lifeline_head(kind: ShapeKind) -> f32 {
-    if kind == ShapeKind::Lifeline { 40.0 } else { 70.0 }
 }
 
 impl UmlApp {

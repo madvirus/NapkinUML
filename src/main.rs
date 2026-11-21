@@ -15,6 +15,7 @@
 mod ai;
 mod app;
 mod assoc;
+mod conn_create;
 mod fonts;
 mod i18n;
 mod model;
