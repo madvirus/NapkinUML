@@ -453,7 +453,11 @@ impl UmlApp {
             return;
         }
         self.checkpoint();
-        let shapes = self.sel_shapes.clone();
+        let mut shapes = self.sel_shapes.clone();
+        // a mind map topic goes with its sub-topics
+        if let Some(d) = self.diag().filter(|d| d.kind == DiagramKind::MindMap) {
+            shapes = crate::model::mind_subtree(d, &shapes);
+        }
         let conns = self.sel_conns.clone();
         if let Some(d) = self.diag_mut() {
             d.shapes.retain(|s| !shapes.contains(&s.id));

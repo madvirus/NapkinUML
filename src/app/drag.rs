@@ -518,6 +518,10 @@ impl UmlApp {
             // a ball dropped near a socket (or a socket near a ball) joins it
             let ids: Vec<u64> = items.iter().map(|(id, _, _)| *id).collect();
             self.join_interfaces(&ids);
+            // a dragged mind map topic joins the topic it was dropped next to
+            if self.diag().map(|dm| dm.kind == DiagramKind::MindMap).unwrap_or(false) {
+                self.mind_drop();
+            }
         }
     }
 }
@@ -535,6 +539,14 @@ fn move_items(d: &Diagram, sel: &[u64]) -> (MoveItems, MoveLines) {
                         ids.push(o.id);
                     }
                 }
+            }
+        }
+    }
+    // a mind map topic carries its sub-topics
+    if d.kind == DiagramKind::MindMap {
+        for id in crate::model::mind_subtree(d, &ids) {
+            if !ids.contains(&id) {
+                ids.push(id);
             }
         }
     }

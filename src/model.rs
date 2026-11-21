@@ -15,10 +15,11 @@ pub enum DiagramKind {
     Package,
     Erd,
     Network,
+    MindMap,
 }
 
 impl DiagramKind {
-    pub const ALL: [DiagramKind; 11] = [
+    pub const ALL: [DiagramKind; 12] = [
         DiagramKind::Class,
         DiagramKind::Component,
         DiagramKind::Deployment,
@@ -30,6 +31,7 @@ impl DiagramKind {
         DiagramKind::Package,
         DiagramKind::Erd,
         DiagramKind::Network,
+        DiagramKind::MindMap,
     ];
 
     pub fn label(self) -> &'static str {
@@ -45,6 +47,7 @@ impl DiagramKind {
             DiagramKind::Package => "Package Diagram",
             DiagramKind::Erd => "Entity Relationship Diagram",
             DiagramKind::Network => "Network Diagram",
+            DiagramKind::MindMap => "Mind Map Diagram",
         }
     }
 
@@ -62,6 +65,7 @@ impl DiagramKind {
             DiagramKind::Package => "Shows packages and the dependencies, imports and merges between them.",
             DiagramKind::Erd => "Shows database tables, their columns and the relationships between them.",
             DiagramKind::Network => "Shows network devices (routers, switches, firewalls, servers, PCs, phones...), the network zones they sit in and how they are connected.",
+            DiagramKind::MindMap => "Shows one central topic with the ideas that branch out of it, and their sub-ideas. Select a topic and press Tab to add a sub-topic, Enter to add a sibling topic. The central topic picks the structure (mind map, logic chart or org chart); topics are placed automatically, and a dragged topic joins the topic it is dropped next to.",
         }
     }
 }
@@ -144,6 +148,10 @@ pub enum ShapeKind {
     Person,
     Cloud,
     NetworkZone,
+    /// The idea a mind map grows from (drawn as a pill).
+    CentralTopic,
+    /// An idea branching off the central topic or another topic.
+    Topic,
 }
 
 impl ShapeKind {
@@ -201,6 +209,8 @@ impl ShapeKind {
             Storage => (50.0, 56.0),
             Cloud => (130.0, 70.0),
             NetworkZone => (320.0, 200.0),
+            CentralTopic => (170.0, 64.0),
+            Topic => (120.0, 36.0),
         }
     }
 
@@ -354,6 +364,8 @@ pub enum ConnKind {
     ManyToOne,
     ManyToMany,
     Wireless,
+    /// A mind map branch from a topic to one of its sub-topics (drawn as a smooth curve).
+    Branch,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -383,6 +395,7 @@ impl ConnKind {
         match self {
             Association | Link => s(false, End::None, End::None, None),
             Wireless => s(true, End::None, End::None, None),
+            Branch => s(false, End::None, End::None, None),
             Aggregation => s(false, End::HollowDiamond, End::None, None),
             Composition => s(false, End::FilledDiamond, End::None, None),
             Generalization => s(false, End::None, End::Triangle, None),
@@ -430,6 +443,35 @@ impl ConnKind {
         use ConnKind::*;
         matches!(self, Association | Message | AsyncMessage | Transition | ControlFlow | Dependency | OneToMany | ManyToOne)
     }
+}
+
+impl ShapeKind {
+    /// Mind map topics (the central topic and the ones branching off it).
+    pub fn is_topic(self) -> bool {
+        matches!(self, ShapeKind::CentralTopic | ShapeKind::Topic)
+    }
+}
+
+/// The given mind map topics and every topic below them (following Branch lines from parent to
+/// child), the given ones first. Used to move and delete a topic with its sub-topics.
+pub fn mind_subtree(d: &Diagram, roots: &[u64]) -> Vec<u64> {
+    let mut ids: Vec<u64> = roots.to_vec();
+    let mut i = 0;
+    while i < ids.len() {
+        let id = ids[i];
+        for c in &d.connectors {
+            if c.kind == ConnKind::Branch && c.from == id && !ids.contains(&c.to) && d.shape(c.to).map(|s| s.kind.is_topic()).unwrap_or(false) {
+                ids.push(c.to);
+            }
+        }
+        i += 1;
+    }
+    ids
+}
+
+/// The topic a mind map topic branches off (its parent), if any.
+pub fn mind_parent(d: &Diagram, id: u64) -> Option<u64> {
+    d.connectors.iter().find(|c| c.kind == ConnKind::Branch && c.to == id && c.from != id).map(|c| c.from)
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
@@ -1192,13 +1234,30 @@ impl Project {
         b.conn(C::Wireless, ap, lt, "", "", "");
         b.conn(C::Wireless, ap, ph, "", "", "");
 
+        // 12. mind map
+        let mut b = Builder::new(&mut p, DiagramKind::MindMap, "Shop Ideas");
+        let mc = b.shape_h(S::CentralTopic, 330.0, 228.0, 170.0, 64.0, "Online Shop");
+        let m1 = b.shape_h(S::Topic, 560.0, 110.0, 120.0, 36.0, "Customers");
+        let m2 = b.shape_h(S::Topic, 560.0, 300.0, 120.0, 36.0, "Products");
+        let m3 = b.shape_h(S::Topic, 150.0, 150.0, 120.0, 36.0, "Payment");
+        let m4 = b.shape_h(S::Topic, 150.0, 330.0, 120.0, 36.0, "Delivery");
+        let m11 = b.shape_h(S::Topic, 730.0, 70.0, 120.0, 36.0, "Sign up");
+        let m12 = b.shape_h(S::Topic, 730.0, 120.0, 120.0, 36.0, "Reviews");
+        let m21 = b.shape_h(S::Topic, 730.0, 280.0, 120.0, 36.0, "Catalog");
+        let m22 = b.shape_h(S::Topic, 730.0, 330.0, 120.0, 36.0, "Stock");
+        let m31 = b.shape_h(S::Topic, -20.0, 120.0, 120.0, 36.0, "Card");
+        let m32 = b.shape_h(S::Topic, -20.0, 170.0, 120.0, 36.0, "Bank transfer");
+        for (a, z) in [(mc, m1), (mc, m2), (mc, m3), (mc, m4), (m1, m11), (m1, m12), (m2, m21), (m2, m22), (m3, m31), (m3, m32)] {
+            b.conn(C::Branch, a, z, "", "", "");
+        }
+
         // folders: the diagrams grouped the way a team might organise them
         let req = p.add_folder("0-Requirements", None);
         let arch = p.add_folder("1-Architecture", None);
         let design = p.add_folder("2-Design", None);
         let behavior = p.add_folder("2.1-Behavior", Some(design));
         let db = p.add_folder("3-Database", None);
-        let plan = [design, arch, arch, req, behavior, behavior, behavior, design, arch, db, arch];
+        let plan = [design, arch, arch, req, behavior, behavior, behavior, design, arch, db, arch, req];
         for (d, f) in p.diagrams.iter_mut().zip(plan) {
             d.folder = Some(f);
         }

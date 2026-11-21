@@ -354,6 +354,20 @@ impl UmlApp {
                 }
                 ui.end_row();
             }
+            if d.kind == DiagramKind::MindMap && crate::mindlayout::is_root(d, s.id) {
+                // a root topic picks how the topics below it are laid out (XMind's structures)
+                let cur = crate::mindlayout::STRUCTURES.iter().find(|(v, _)| *v == s.orient.min(2)).map(|(_, l)| *l).unwrap_or("Mind Map");
+                ui.label(tr(lang, "Structure"));
+                egui::ComboBox::from_id_salt("mind_structure").selected_text(tr(lang, cur)).show_ui(ui, |ui| {
+                    for (v, l) in crate::mindlayout::STRUCTURES {
+                        if ui.selectable_label(s.orient.min(2) == v, tr(lang, l)).clicked() && s.orient != v {
+                            s.orient = v;
+                            field_changed = Some(11);
+                        }
+                    }
+                });
+                ui.end_row();
+            }
             if s.kind == ShapeKind::RequiredInterface {
                 let dirs = ["Right", "Down", "Left", "Up"];
                 ui.label(tr(lang, "Opening"));

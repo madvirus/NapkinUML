@@ -4,7 +4,8 @@ use super::*;
 
 /// NAPKINUML_PLAY=<steps> in a --screenshot run feeds scripted input to the app, as if the
 /// person did it, without touching the real mouse or keyboard. Steps are separated by `;`:
-/// `click x y`, `dclick x y`, `rclick x y`, `drag x0 y0 x1 y1` (window pixels, as in the pictures), `key <Name>`
+/// `click x y`, `dclick x y`, `rclick x y`, `drag x0 y0 x1 y1` (window pixels, as in the pictures),
+/// `press x y`, `move x y` and `release` (a drag in pieces, to photograph it held), `key <Name>`
 /// (an egui key name: ArrowDown, Enter, F2, Escape...), `type <text>`, `wait <frames>` and
 /// `shot <name>` (saves <picture>-<name>.png beside the --screenshot picture). Each step
 /// waits 12 frames after the one before; the --screenshot picture comes after the last.
@@ -77,6 +78,18 @@ impl UmlApp {
                 }
                 pl.queue.push_back(vec![egui::PointerButton::Primary].iter().map(|b| egui::Event::PointerButton { pos: to, button: *b, pressed: false, modifiers: m }).collect());
             }
+            // a drag in pieces, so a picture can be taken while the button is still down
+            "press" => {
+                pl.queue.push_back(vec![egui::Event::PointerMoved(at)]);
+                pl.queue.push_back(vec![button(PointerButton::Primary, true)]);
+            }
+            "move" => {
+                let from = ctx.input(|i| i.pointer.latest_pos()).unwrap_or(at);
+                for k in 1..=8 {
+                    pl.queue.push_back(vec![egui::Event::PointerMoved(from + (at - from) * (k as f32 / 8.0))]);
+                }
+            }
+            "release" => pl.queue.push_back(vec![button(PointerButton::Primary, false)]),
             "key" => {
                 if let Some(key) = Key::from_name(&rest) {
                     let ev = |pressed| egui::Event::Key { key, physical_key: None, pressed, repeat: false, modifiers: m };

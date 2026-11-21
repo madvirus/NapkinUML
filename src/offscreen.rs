@@ -164,6 +164,7 @@ pub fn diagram_picture(d: &Diagram, opts: &ProjectOptions, look: &Look, fonts: &
                 s.h = s.h.max(m.y);
             }
         }
+        crate::mindlayout::layout(&mut d);
         if let Some(b) = render::diagram_bounds(&d) {
             bounds = b;
         }

@@ -279,10 +279,11 @@ impl UmlApp {
     /// its count, and the diagrams of that type.
     pub(super) fn navigator_by_type(&mut self, ui: &mut egui::Ui, project: &Project) {
         let lang = self.settings.language;
-        let groups: [(&str, Vec<DiagramKind>); 3] = [
-            ("UML Diagrams", DiagramKind::ALL.iter().copied().filter(|k| !matches!(k, DiagramKind::Erd | DiagramKind::Network)).collect()),
+        let groups: [(&str, Vec<DiagramKind>); 4] = [
+            ("UML Diagrams", DiagramKind::ALL.iter().copied().filter(|k| !matches!(k, DiagramKind::Erd | DiagramKind::Network | DiagramKind::MindMap)).collect()),
             ("Database Modeling", vec![DiagramKind::Erd]),
             ("Network", vec![DiagramKind::Network]),
+            ("Mind Map", vec![DiagramKind::MindMap]),
         ];
         let mut rows: Vec<TreeRow> = vec![];
         let root = TreeKey::Root(1);

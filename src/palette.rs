@@ -242,6 +242,13 @@ fn palette_base(kind: DiagramKind) -> Vec<PaletteEntry> {
             c(ConnKind::Wireless, "Wireless Connection", "a wireless connection"),
             ANCHOR,
         ],
+        DiagramKind::MindMap => vec![
+            s(K::CentralTopic, "Central Topic", "the main idea the mind map grows from"),
+            s(K::Topic, "Topic", "an idea branching off another topic (select a topic: Tab adds a sub-topic, Enter a sibling)"),
+            NOTE,
+            // no Branch tool: branches come from Tab/Enter and from dragging a topic onto another
+            ANCHOR,
+        ],
         DiagramKind::Erd => vec![
             s(K::Entity, "Entity", "a database table"),
             s(K::DbView, "View", "a database view"),
@@ -264,6 +271,8 @@ pub fn label_for(kind: DiagramKind, tool: Tool) -> &'static str {
         .unwrap_or(match tool {
             Tool::Select => "Select",
             Tool::Shape(_) => "Shape",
+            // mind map branches have no toolbox entry but keep their name
+            Tool::Conn(ConnKind::Branch) => "Branch",
             Tool::Conn(_) => "Connector",
         })
 }
@@ -295,6 +304,8 @@ pub fn base_name(kind: ShapeKind) -> &'static str {
         Storage => "Storage",
         Cloud => "Internet",
         NetworkZone => "Zone",
+        CentralTopic => "Central Topic",
+        Topic => "Topic",
         Constraint => "constraint",
         Collaboration => "Collaboration",
         Component => "Component",

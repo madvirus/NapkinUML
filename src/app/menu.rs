@@ -745,11 +745,26 @@ impl UmlApp {
         if self.switcher.is_none() && ctx.input_mut(|i| i.consume_shortcut(&SC_SWITCHER)) {
             self.open_switcher();
         }
+        // Tab on a mind map topic (also while its name is being typed): a sub-topic
+        if let Some(id) = self.mind_pending.take() {
+            if self.editing.is_some() {
+                self.commit_edit();
+            }
+            self.mind_add(id, true);
+            return;
+        }
         if typing || dialog_open {
             return;
         }
         // while the left-pane tree has the keyboard, arrows, Enter and F2 are its own
         self.tree_keys(ctx);
+        // Enter on a selected mind map topic: a sibling topic (a sub-topic of the central one)
+        if !self.tree_focus && ctx.input(|i| i.modifiers.is_none() && i.key_pressed(Key::Enter)) {
+            if let Some(id) = self.mind_target(ctx) {
+                self.mind_add(id, false);
+                return;
+            }
+        }
         if ctx.input_mut(|i| i.consume_shortcut(&SC_CLOSE_DIAGRAM)) {
             if let Some(id) = self.active {
                 self.close_diagram(id);

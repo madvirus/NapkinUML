@@ -212,6 +212,13 @@ impl UmlApp {
             }
         }
 
+        // a mind map places its topics by its structure (not while they are being dragged)
+        if !matches!(self.drag, Drag::Move { .. }) {
+            if let Some(d) = self.diag_mut() {
+                crate::mindlayout::layout(d);
+            }
+        }
+
         let Some(d) = self.diag().cloned() else {
             painter.text(rect.center(), Align2::CENTER_CENTER, self.t("No diagram is open."), egui::FontId::proportional(16.0), ui.visuals().weak_text_color());
             painter.text(
@@ -310,6 +317,7 @@ impl UmlApp {
 
         // previews
         match &self.drag {
+            Drag::Move { .. } if d.kind == DiagramKind::MindMap => self.mind_drop_preview(&painter, &cam, &d, &look),
             Drag::Rubber { start, cur } => {
                 let r = Rect::from_two_pos(*start, *cur);
                 painter.rect(r, 0.0, look.accent().linear_multiply(0.08), Stroke::new(1.0_f32, look.accent()), StrokeKind::Middle);

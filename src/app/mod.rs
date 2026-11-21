@@ -27,6 +27,7 @@ mod canvas_input;
 mod drag;
 mod conn_pick;
 mod inline_edit;
+mod mindmap;
 mod dialogs;
 mod screenshot;
 use project::*;
@@ -148,6 +149,8 @@ pub struct UmlApp {
     shot: Option<Shot>,
     /// NAPKINUML_PLAY: scripted clicks and keys for --screenshot runs.
     player: Option<Player>,
+    /// A Tab taken from egui for a mind map: add a sub-topic to this topic next frame.
+    mind_pending: Option<u64>,
     fonts: FontState,
     jobs: Jobs,
     /// Right-clicked on a sequence lifeline: (lifeline, height, on an activation bar, the
@@ -256,6 +259,7 @@ impl UmlApp {
             screenshot: screenshot.map(|p| (p, 0)),
             shot: None,
             player: std::env::var("NAPKINUML_PLAY").ok().map(|s| Player::new(&s)),
+            mind_pending: None,
             fonts: FontState::new(),
             jobs: Jobs::default(),
             seq_menu: None,
@@ -444,6 +448,7 @@ impl UmlApp {
 impl eframe::App for UmlApp {
     fn raw_input_hook(&mut self, ctx: &egui::Context, raw_input: &mut egui::RawInput) {
         self.play_input(ctx, raw_input);
+        self.mind_tab(ctx, raw_input);
     }
 
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {

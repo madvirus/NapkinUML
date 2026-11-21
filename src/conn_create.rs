@@ -74,6 +74,8 @@ pub fn twin_on_drop(diagram: DiagramKind, conn: ConnKind, shape: ShapeKind) -> O
         DiagramKind::Object => same(matches!(conn, Link | Association | Aggregation | Composition | Dependency | Generalization | Realization) && matches!(shape, K::Instance | K::Class | K::Package)),
         DiagramKind::Package => same(matches!(conn, Dependency | Import | Access | Merge | Generalization | Realization) && matches!(shape, K::Package | K::Subsystem)),
         DiagramKind::Erd => same(conn.is_erd() && matches!(shape, K::Entity | K::DbView)),
+        // a branch dragged off a topic makes a sub-topic
+        DiagramKind::MindMap => (conn == Branch && shape.is_topic()).then_some(K::Topic),
         DiagramKind::Activity if matches!(conn, ControlFlow | ObjectFlow) => match shape {
             K::Action | K::ObjectNode | K::SendSignal | K::AcceptEvent => Some(shape),
             K::Initial | K::Decision | K::Merge | K::Fork | K::Join | K::AcceptTimeEvent => Some(K::Action),
@@ -107,6 +109,9 @@ mod tests {
     fn pick_default_rules() {
         assert_eq!(pick_default(DiagramKind::Network, ConnKind::Link, K::Cloud), Some(K::Cloud));
         assert_eq!(pick_default(DiagramKind::Network, ConnKind::Link, K::NetworkZone), None);
+        assert_eq!(pick_default(DiagramKind::MindMap, ConnKind::Branch, K::CentralTopic), Some(K::Topic));
+        assert_eq!(pick_default(DiagramKind::MindMap, ConnKind::Branch, K::Topic), Some(K::Topic));
+        assert_eq!(pick_default(DiagramKind::MindMap, ConnKind::Branch, K::Note), None);
         assert_eq!(pick_default(DiagramKind::UseCase, ConnKind::Association, K::Actor), Some(K::UseCase));
         assert_eq!(pick_default(DiagramKind::UseCase, ConnKind::Association, K::UseCase), None);
         assert_eq!(pick_default(DiagramKind::Class, ConnKind::Generalization, K::Class), Some(K::Class));

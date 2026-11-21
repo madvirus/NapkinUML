@@ -61,6 +61,21 @@ impl UmlApp {
         }
         self.open_diagram(id);
         self.dirty = true;
+        if kind == DiagramKind::MindMap {
+            // a new mind map starts from its central topic, in the middle of the view, with its
+            // name ready to type over (part of the new diagram, not an undo step)
+            let r = self.canvas_rect;
+            let (cx, cy) = match self.view() {
+                v if r.is_positive() && v.zoom > 0.0 => ((r.width() / 2.0 - v.pan.x) / v.zoom, (r.height() / 2.0 - v.pan.y) / v.zoom),
+                _ => (400.0, 250.0),
+            };
+            let undo_before = self.undo.len();
+            self.create_shape(ShapeKind::CentralTopic, cx.round(), cy.round());
+            self.undo.truncate(undo_before);
+            if let Some(ed) = self.editing.as_mut() {
+                ed.select_all = true;
+            }
+        }
     }
 
     pub(super) fn delete_diagram(&mut self, id: u64) {

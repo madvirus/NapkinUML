@@ -127,6 +127,9 @@ impl Look {
             // network pictures get soft colours of their own
             Firewall | WebFirewall => (254, 222, 212),
             Cloud => (236, 243, 252),
+            // mind maps: a warm central topic, pale blue topics
+            CentralTopic => (255, 214, 150),
+            Topic => (226, 239, 255),
             Router | Switch | Hub | Server | LoadBalancer | Pc | Laptop | Phone | AccessPoint | Storage | Database | Person => (214, 232, 252),
             _ => (self.shape_fill.r(), self.shape_fill.g(), self.shape_fill.b()),
         };
@@ -241,6 +244,8 @@ pub fn min_size(ctx: &egui::Context, shape: &Shape, opts: &ProjectOptions, look:
             Vec2::new((w + 12.0).max(20.0), lines.len().max(1) as f32 * lh + 8.0)
         }
         Lifeline | ActorLifeline => Vec2::new(text_width(ctx, &shape.name, ts) + 24.0, 120.0),
+        CentralTopic => Vec2::new(text_width(ctx, &shape.name, ts * 1.2) + 40.0, lh * 1.2 + 18.0),
+        Topic => Vec2::new(text_width(ctx, &shape.name, ts) + 24.0, lh + 12.0),
         _ => Vec2::new(8.0, 8.0),
     }
 }
@@ -803,6 +808,15 @@ pub fn draw_shape(painter: &Painter, cam: &Cam, shape: &Shape, look: &Look, opts
                 text_at(painter, look, c, Align2::CENTER_CENTER, &shape.name, f.clone(), tc);
             }
         }
+        CentralTopic => {
+            // a pill with a thicker outline and a larger name
+            painter.rect(r, (r.height() / 2.0).min(255.0), fill, Stroke::new(stroke.width * 1.8, line), StrokeKind::Middle);
+            wrapped_center(painter, look, r.shrink2(Vec2::new(r.height() * 0.3, 0.0)), &shape.name, font(look, cam, 1.2), tc);
+        }
+        Topic => {
+            painter.rect(r, (8.0 * z).min(r.height() / 2.0), fill, stroke, StrokeKind::Middle);
+            wrapped_center(painter, look, r, &shape.name, f.clone(), tc);
+        }
         NetworkZone => {
             let rad = 8.0 * z;
             painter.rect_filled(r, rad, fill);
@@ -1078,6 +1092,9 @@ pub fn conn_path(dkind: DiagramKind, c: &Connector, from: &Shape, to: &Shape, de
     if dkind == DiagramKind::Sequence && c.kind.is_message() {
         return controls;
     }
+    if let Some(curve) = branch_curve(c, from, to) {
+        return curve;
+    }
     let style = effective_style(c, default_style);
     let rect = matches!(style, STYLE_RECTILINEAR | STYLE_ROUND_RECTILINEAR);
     let mut path = if rect && from.id != to.id { rectilinear(c, from, to) } else { controls };
@@ -1087,6 +1104,33 @@ pub fn conn_path(dkind: DiagramKind, c: &Connector, from: &Shape, to: &Shape, de
         STYLE_ROUND_OBLIQUE | STYLE_ROUND_RECTILINEAR => round_corners(&path, 10.0),
         _ => path,
     }
+}
+
+/// A mind map branch left on "Follow diagram" with no bend points or fixed ends: a smooth S
+/// curve from the side of the parent topic facing the child to the near side of the child,
+/// leaving and arriving level. None when the topics overlap side to side (a straight line then).
+fn branch_curve(c: &Connector, from: &Shape, to: &Shape) -> Option<Vec<(f32, f32)>> {
+    if c.kind != ConnKind::Branch || c.style != STYLE_FOLLOW_DIAGRAM || !c.points.is_empty() || c.from_anchor.is_some() || c.to_anchor.is_some() || from.id == to.id {
+        return None;
+    }
+    let right = to.center().0 >= from.center().0;
+    let (sx, ex) = if right { (from.x + from.w, to.x) } else { (from.x, to.x + to.w) };
+    if (ex - sx) * if right { 1.0 } else { -1.0 } < 4.0 {
+        return None;
+    }
+    let (sy, ey) = (from.center().1, to.center().1);
+    let k = (ex - sx) * 0.5;
+    let n = 20;
+    Some(
+        (0..=n)
+            .map(|i| {
+                let t = i as f32 / n as f32;
+                let u = 1.0 - t;
+                let (b0, b1, b2, b3) = (u * u * u, 3.0 * u * u * t, 3.0 * u * t * t, t * t * t);
+                (b0 * sx + b1 * (sx + k) + b2 * (ex - k) + b3 * ex, b0 * sy + b1 * sy + b2 * ey + b3 * ey)
+            })
+            .collect(),
+    )
 }
 
 /// Right-angle routing: through the bend points with horizontal/vertical runs only.
@@ -1732,7 +1776,18 @@ pub fn draw_icon(painter: &Painter, rect: Rect, tool: Tool, look: &Look, opts: &
             let b = Pos2::new(rect.right() - 2.0, rect.top() + 2.0);
             let stroke = Stroke::new(1.2_f32, look.line());
             let style = kind.style();
-            if style.dashed {
+            if kind == ConnKind::Branch {
+                // a mind map branch: an S curve
+                let n = 12;
+                let pts: Vec<Pos2> = (0..=n)
+                    .map(|i| {
+                        let t = i as f32 / n as f32;
+                        let s = t * t * (3.0 - 2.0 * t);
+                        Pos2::new(a.x + (b.x - a.x) * t, a.y + (b.y - a.y) * s)
+                    })
+                    .collect();
+                painter.add(epaint::Shape::line(pts, stroke));
+            } else if style.dashed {
                 dashed(painter, &[a, b], stroke, 0.5);
             } else {
                 painter.line_segment([a, b], stroke);
