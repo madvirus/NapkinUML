@@ -773,6 +773,30 @@ impl UmlApp {
                 return;
             }
         }
+        // arrow keys on a selected mind map topic select the topic that way (Shift+arrow still nudges)
+        if !self.tree_focus {
+            if let Some(id) = self.mind_target(ctx) {
+                let dir = ctx.input(|i| {
+                    if !i.modifiers.is_none() {
+                        None
+                    } else if i.key_pressed(Key::ArrowLeft) {
+                        Some((-1, 0))
+                    } else if i.key_pressed(Key::ArrowRight) {
+                        Some((1, 0))
+                    } else if i.key_pressed(Key::ArrowUp) {
+                        Some((0, -1))
+                    } else if i.key_pressed(Key::ArrowDown) {
+                        Some((0, 1))
+                    } else {
+                        None
+                    }
+                });
+                if let Some(dir) = dir {
+                    self.mind_step(id, dir);
+                    return;
+                }
+            }
+        }
         if ctx.input_mut(|i| i.consume_shortcut(&SC_CLOSE_DIAGRAM)) {
             if let Some(id) = self.active {
                 self.close_diagram(id);

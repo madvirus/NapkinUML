@@ -273,6 +273,15 @@ impl UmlApp {
         }
     }
 
+    /// An arrow key on a selected topic: select the topic that way (`mindlayout::neighbour`)
+    /// and scroll it into view. Nothing happens when there is none.
+    pub(super) fn mind_step(&mut self, id: u64, dir: (i8, i8)) {
+        let Some(next) = self.diag().and_then(|d| crate::mindlayout::neighbour(d, id, dir)) else { return };
+        self.clear_selection();
+        self.sel_shapes.push(next);
+        self.keep_in_view(next);
+    }
+
     /// Scroll the canvas just enough that the shape is in view (with a small margin).
     fn keep_in_view(&mut self, id: u64) {
         let rect = self.canvas_rect;

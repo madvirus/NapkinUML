@@ -253,6 +253,50 @@ pub fn fold_knobs(d: &Diagram) -> Vec<(u64, Grow, Option<usize>)> {
         .collect()
 }
 
+/// The topic an arrow key moves the selection to from topic `id` (`dir` is (-1, 0) left,
+/// (1, 0) right, (0, -1) up or (0, 1) down):
+/// * toward its sub-topics (the way they grow; a mind map root's either side): the sub-topic on
+///   that side nearest level with it, or nowhere when it has none (or they are folded);
+/// * toward its parent (back the way it grew): the parent;
+/// * across (up and down beside it, left and right in an org chart): the nearest sibling that
+///   way, else the nearest topic that way anywhere (a cousin, or the far side of the map).
+/// Distance that way counts once, distance off to the side twice.
+pub fn neighbour(d: &Diagram, id: u64, dir: (i8, i8)) -> Option<u64> {
+    let t = Tree::new(d);
+    let me = *t.rect.get(&id)?;
+    let (dx, dy) = (dir.0 as f32, dir.1 as f32);
+    let along = |r: &R| (r.cx() - me.cx()) * dx + (r.cy() - me.cy()) * dy;
+    let across = |r: &R| ((r.cx() - me.cx()) * dy).abs() + ((r.cy() - me.cy()) * dx).abs();
+    let score = |k: &u64| {
+        let r = &t.rect[k];
+        along(r) + 2.0 * across(r)
+    };
+    let best = |list: Vec<u64>, by: &dyn Fn(&u64) -> f32| list.into_iter().min_by(|a, b| by(a).partial_cmp(&by(b)).unwrap_or(std::cmp::Ordering::Equal));
+    let grow = t.grow(id)?;
+    let toward_kids = match grow {
+        Grow::Down => dir == (0, 1),
+        Grow::Right => dir == (1, 0),
+        Grow::Left => dir == (-1, 0),
+        Grow::Both => dir.1 == 0,
+    };
+    if toward_kids {
+        let kids: Vec<u64> = t.kids(id).iter().copied().filter(|k| along(&t.rect[k]) > 0.0).collect();
+        return best(kids, &|k| across(&t.rect[k]));
+    }
+    if let Some(&p) = t.parent.get(&id) {
+        let back = if grow == Grow::Down { dir == (0, -1) } else { dir.1 == 0 && along(&t.rect[&p]) > 0.0 };
+        if back {
+            return Some(p);
+        }
+        let sibs: Vec<u64> = t.kids(p).iter().copied().filter(|s| *s != id && along(&t.rect[s]) > 0.0).collect();
+        if let Some(s) = best(sibs, &score) {
+            return Some(s);
+        }
+    }
+    let any: Vec<u64> = t.rect.keys().copied().filter(|k| *k != id && along(&t.rect[k]) > 0.0).collect();
+    best(any, &score)
+}
+
 /// Which way a topic's sub-topics grow (None when its parents loop).
 pub fn grow(d: &Diagram, id: u64) -> Option<Grow> {
     Tree::new(d).grow(id)
@@ -576,6 +620,33 @@ mod tests {
         d.connectors[i].style = STYLE_CURVE;
         layout(&mut d);
         assert_eq!(style(&d, catalog).0, STYLE_OBLIQUE);
+    }
+
+    #[test]
+    fn arrow_keys_walk_the_tree() {
+        let mut d = shop();
+        layout(&mut d);
+        let n = |d: &Diagram, s: &str| id(d, s);
+        let (root, customers, products, catalog, stock, payment, card) = (n(&d, "Online Shop"), n(&d, "Customers"), n(&d, "Products"), n(&d, "Catalog"), n(&d, "Stock"), n(&d, "Payment"), n(&d, "Card"));
+        // the root: each side's sub-topic nearest level with it
+        let right = neighbour(&d, root, (1, 0)).unwrap();
+        assert!(right == customers || right == products);
+        assert_eq!(neighbour(&d, root, (-1, 0)).map(|k| k == payment || k == n(&d, "Delivery")), Some(true));
+        // into the sub-topics, back to the parent, along the siblings
+        assert!(matches!(neighbour(&d, products, (1, 0)), Some(k) if k == catalog || k == stock));
+        assert_eq!(neighbour(&d, catalog, (-1, 0)), Some(products));
+        assert_eq!(neighbour(&d, catalog, (0, 1)), Some(stock));
+        assert_eq!(neighbour(&d, products, (0, -1)), Some(customers));
+        // a leaf has nothing further out; the left side runs the other way
+        assert_eq!(neighbour(&d, stock, (1, 0)), None);
+        assert_eq!(neighbour(&d, payment, (1, 0)), Some(root));
+        assert_eq!(neighbour(&d, payment, (-1, 0)).map(|k| k == card || k == n(&d, "Bank transfer")), Some(true));
+        // org chart: down into the sub-topics, up to the parent, sideways along the row
+        d.shape_mut(root).unwrap().orient = ORG_CHART;
+        layout(&mut d);
+        assert_eq!(neighbour(&d, catalog, (0, -1)), Some(products));
+        assert!(matches!(neighbour(&d, products, (0, 1)), Some(k) if k == catalog || k == stock));
+        assert!(neighbour(&d, catalog, (1, 0)).is_some() || neighbour(&d, catalog, (-1, 0)).is_some());
     }
 
     #[test]
