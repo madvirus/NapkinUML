@@ -244,8 +244,14 @@ pub fn min_size(ctx: &egui::Context, shape: &Shape, opts: &ProjectOptions, look:
             Vec2::new((w + 12.0).max(20.0), lines.len().max(1) as f32 * lh + 8.0)
         }
         Lifeline | ActorLifeline => Vec2::new(text_width(ctx, &shape.name, ts) + 24.0, 120.0),
-        CentralTopic => Vec2::new(text_width(ctx, &shape.name, ts * 1.2) + 40.0, lh * 1.2 + 18.0),
-        Topic => Vec2::new(text_width(ctx, &shape.name, ts) + 24.0, lh + 12.0),
+        // a topic's name may have line breaks: as wide as its longest line, as tall as its lines
+        CentralTopic | Topic => {
+            let k = if shape.kind == CentralTopic { 1.2 } else { 1.0 };
+            let lines: Vec<&str> = shape.name.split('\n').collect();
+            let w = lines.iter().map(|l| text_width(ctx, l, ts * k)).fold(0.0, f32::max);
+            let (pad_w, pad_h) = if shape.kind == CentralTopic { (40.0, 18.0) } else { (24.0, 12.0) };
+            Vec2::new(w + pad_w, lines.len().max(1) as f32 * lh * k + pad_h)
+        }
         _ => Vec2::new(8.0, 8.0),
     }
 }
@@ -553,6 +559,23 @@ fn wrapped_center(painter: &Painter, look: &Look, r: Rect, text: &str, font: Fon
     painter.galley(job_pos, galley, color);
 }
 
+/// A topic's name: each line (the name's own line breaks) centred, the block centred in `r`;
+/// a line too long for the box wraps.
+fn centered_lines(painter: &Painter, look: &Look, r: Rect, text: &str, font: FontId, color: Color32) {
+    if look.icon || text.is_empty() {
+        return;
+    }
+    let wrap = (r.width() - 8.0).max(10.0);
+    let galleys: Vec<_> = text.split('\n').map(|l| painter.layout(l.to_string(), font.clone(), color, wrap)).collect();
+    let total: f32 = galleys.iter().map(|g| g.size().y).sum();
+    let mut y = r.center().y - total / 2.0;
+    for g in galleys {
+        let size = g.size();
+        painter.galley(Pos2::new(r.center().x - size.x / 2.0, y), g, color);
+        y += size.y;
+    }
+}
+
 /// Draw one shape. `fill_override` is the user's colour.
 pub fn draw_shape(painter: &Painter, cam: &Cam, shape: &Shape, look: &Look, opts: &ProjectOptions) {
     use ShapeKind::*;
@@ -811,11 +834,11 @@ pub fn draw_shape(painter: &Painter, cam: &Cam, shape: &Shape, look: &Look, opts
         CentralTopic => {
             // a pill with a thicker outline and a larger name
             painter.rect(r, (r.height() / 2.0).min(255.0), fill, Stroke::new(stroke.width * 1.8, line), StrokeKind::Middle);
-            wrapped_center(painter, look, r.shrink2(Vec2::new(r.height() * 0.3, 0.0)), &shape.name, font(look, cam, 1.2), tc);
+            centered_lines(painter, look, r.shrink2(Vec2::new(r.height().min(64.0 * z) * 0.3, 0.0)), &shape.name, font(look, cam, 1.2), tc);
         }
         Topic => {
             painter.rect(r, (8.0 * z).min(r.height() / 2.0), fill, stroke, StrokeKind::Middle);
-            wrapped_center(painter, look, r, &shape.name, f.clone(), tc);
+            centered_lines(painter, look, r, &shape.name, f.clone(), tc);
         }
         NetworkZone => {
             let rad = 8.0 * z;

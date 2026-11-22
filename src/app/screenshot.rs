@@ -90,8 +90,23 @@ impl UmlApp {
                 }
             }
             "release" => pl.queue.push_back(vec![button(PointerButton::Primary, false)]),
+            // "key Enter", or with modifiers: "key shift+Enter", "key ctrl+Slash"
             "key" => {
-                if let Some(key) = Key::from_name(&rest) {
+                let mut m = Modifiers::NONE;
+                let mut name = rest.as_str();
+                while let Some((pre, after)) = name.split_once('+') {
+                    match pre.to_ascii_lowercase().as_str() {
+                        "shift" => m.shift = true,
+                        "ctrl" => {
+                            m.ctrl = true;
+                            m.command = true;
+                        }
+                        "alt" => m.alt = true,
+                        _ => break,
+                    }
+                    name = after;
+                }
+                if let Some(key) = Key::from_name(name) {
                     let ev = |pressed| egui::Event::Key { key, physical_key: None, pressed, repeat: false, modifiers: m };
                     pl.queue.push_back(vec![ev(true)]);
                     pl.queue.push_back(vec![ev(false)]);

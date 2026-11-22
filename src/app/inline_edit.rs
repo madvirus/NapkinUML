@@ -336,7 +336,8 @@ impl UmlApp {
                     // free text is edited in place, over the text itself
                     return (r.left_top(), r.width().max(160.0), true, true);
                 }
-                (Pos2::new(r.center().x - w / 2.0, y), w, s.kind == ShapeKind::Note, false)
+                // a mind map topic's name may take line breaks (Shift+Enter)
+                (Pos2::new(r.center().x - w / 2.0, y), w, s.kind == ShapeKind::Note || s.kind.is_topic(), false)
             }),
             (EditTarget::Conn(id), _) => d.connectors.iter().find(|c| c.id == id).and_then(|c| {
                 let (a, b) = (d.shape(c.from)?, d.shape(c.to)?);
@@ -357,6 +358,8 @@ impl UmlApp {
             None if guard.is_some() => tr(self.settings.language, "guard"),
             None => "",
         };
+        // a topic's name: Shift+Enter breaks the line, Enter alone finishes (as a one-line name does)
+        let topic_name = line.is_none() && part.is_none() && guard.is_none() && matches!(target, EditTarget::Shape(id) if d.shape(id).map(|s| s.kind.is_topic()).unwrap_or(false));
         let mut commit = false;
         let mut cancel = false;
         let ed = self.editing.as_mut().unwrap();
@@ -374,13 +377,18 @@ impl UmlApp {
         // its shape whatever width the text box really takes; line editors keep their left edge
         let (anchor, pivot) = if left { (pos, Align2::LEFT_TOP) } else { (Pos2::new(pos.x + width / 2.0, pos.y), Align2::CENTER_TOP) };
         egui::Area::new(egui::Id::new("inline_edit")).pivot(pivot).fixed_pos(anchor).order(egui::Order::Foreground).show(ctx, |ui| {
-            let te = if multiline {
+            let te = if topic_name {
+                egui::TextEdit::multiline(&mut ed.text).desired_width(width).desired_rows(1).horizontal_align(egui::Align::Center).return_key(egui::KeyboardShortcut::new(egui::Modifiers::SHIFT, Key::Enter))
+            } else if multiline {
                 egui::TextEdit::multiline(&mut ed.text).desired_width(width).desired_rows(3)
             } else {
                 let align = if left { egui::Align::Min } else { egui::Align::Center };
                 egui::TextEdit::singleline(&mut ed.text).desired_width(width).horizontal_align(align).hint_text(hint)
             };
             let r = ui.add(te);
+            if topic_name && ui.memory(|m| m.has_focus(r.id)) && ui.input(|i| i.events.iter().any(|e| matches!(e, egui::Event::Key { key: Key::Enter, pressed: true, modifiers, .. } if modifiers.is_none()))) {
+                ui.memory_mut(|m| m.surrender_focus(r.id));
+            }
             if ed.focus {
                 r.request_focus();
                 ed.focus = false;

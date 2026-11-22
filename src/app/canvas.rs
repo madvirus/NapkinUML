@@ -208,6 +208,13 @@ impl UmlApp {
                     if s.h < m.y {
                         s.h = m.y;
                     }
+                    // a topic is as tall as its name's lines: it shrinks again when a line break goes
+                    if s.kind.is_topic() {
+                        let h = m.y.max(s.kind.default_size().1);
+                        if (s.h - h).abs() > 0.01 {
+                            s.h = h;
+                        }
+                    }
                 }
             }
         }
