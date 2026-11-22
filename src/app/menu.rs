@@ -765,6 +765,14 @@ impl UmlApp {
                 return;
             }
         }
+        // Ctrl+/ on a mind map topic folds or unfolds its sub-topics
+        if !self.tree_focus && ctx.input(|i| i.modifiers.command && i.key_pressed(Key::Slash)) {
+            if let Some(id) = self.mind_target(ctx) {
+                ctx.input_mut(|i| i.consume_key(Modifiers::COMMAND, Key::Slash));
+                self.mind_toggle(id);
+                return;
+            }
+        }
         if ctx.input_mut(|i| i.consume_shortcut(&SC_CLOSE_DIAGRAM)) {
             if let Some(id) = self.active {
                 self.close_diagram(id);

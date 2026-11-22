@@ -1581,6 +1581,47 @@ pub fn paint_diagram(painter: &Painter, cam: &Cam, d: &crate::model::Diagram, lo
     for s in &d.shapes {
         device_name_over_lines(painter, cam, s, look);
     }
+    draw_fold_knobs(painter, cam, d, look, &|_| false);
+}
+
+/// Where a mind map topic's fold knob sits: a small circle just past its edge on the side its
+/// sub-topics grow to (where its branches start). Returns the centre and radius on screen.
+pub fn fold_knob(cam: &Cam, s: &Shape, g: crate::mindlayout::Grow) -> (Pos2, f32) {
+    use crate::mindlayout::Grow;
+    let r = cam.rect(s);
+    let rad = (8.0 * cam.zoom).max(6.5);
+    let gap = rad + 2.0 * cam.zoom;
+    let c = match g {
+        Grow::Left => Pos2::new(r.left() - gap, r.center().y),
+        Grow::Down => Pos2::new(r.center().x, r.bottom() + gap),
+        _ => Pos2::new(r.right() + gap, r.center().y),
+    };
+    (c, rad)
+}
+
+/// Mind map fold knobs: a folded topic's always, with how many topics it hides; an unfolded
+/// topic's (a minus) only where `open` says (under the pointer, selected).
+pub fn draw_fold_knobs(painter: &Painter, cam: &Cam, d: &crate::model::Diagram, look: &Look, open: &dyn Fn(u64) -> bool) {
+    for (id, g, folded) in crate::mindlayout::fold_knobs(d) {
+        if folded.is_none() && !open(id) {
+            continue;
+        }
+        let Some(s) = d.shape(id) else { continue };
+        let l = shape_look(s, look);
+        let (c, rad) = fold_knob(cam, s, g);
+        let stroke = Stroke::new((1.2 * cam.zoom).clamp(0.8, 2.0), l.line());
+        painter.circle(c, rad, l.background(), stroke);
+        match folded {
+            Some(n) => {
+                let text = if n > 99 { "99+".to_string() } else { n.to_string() };
+                let size = rad * if text.len() > 2 { 0.8 } else { 1.15 };
+                painter.text(c, Align2::CENTER_CENTER, text, font_id(&l, size), l.text());
+            }
+            None => {
+                painter.line_segment([c - Vec2::new(rad * 0.55, 0.0), c + Vec2::new(rad * 0.55, 0.0)], stroke);
+            }
+        }
+    }
 }
 
 /// A network device's name drawn again on top of the lines, on a small patch of the
@@ -1759,6 +1800,7 @@ pub fn draw_icon(painter: &Painter, rect: Rect, tool: Tool, look: &Look, opts: &
                 hide_icon: false,
                 hide_attributes: false,
                 hide_operations: false,
+            fold: None,
                 splits: Vec::new(),
                 act_spans: Vec::new(),
                 dividers: None,

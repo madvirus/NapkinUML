@@ -276,6 +276,12 @@ impl UmlApp {
         for s in &d.shapes {
             render::device_name_over_lines(&painter, &cam, s, &look);
         }
+        // mind map fold knobs: a folded topic's always, an unfolded one's near the pointer or selected
+        if d.kind == DiagramKind::MindMap {
+            let hover = resp.hover_pos();
+            let reach = 26.0 * cam.zoom.max(0.5);
+            render::draw_fold_knobs(&painter, &cam, &d, &look, &|id| self.sel_shapes.contains(&id) || hover.zip(d.shape(id)).map(|(p, s)| cam.rect(s).expand(reach).contains(p)).unwrap_or(false));
+        }
         for id in &self.sel_shapes {
             if let Some(s) = d.shape(*id) {
                 render::draw_selection(&painter, &cam, s, &look);
@@ -474,6 +480,22 @@ impl UmlApp {
             if on_bar || near.is_some() {
                 ui.separator();
             }
+        }
+        // a mind map topic: fold or unfold its sub-topics
+        let fold_target = if self.sel_shapes.len() == 1 && self.sel_conns.is_empty() {
+            let id = self.sel_shapes[0];
+            self.diag().filter(|d| crate::model::mind_foldable(d, id)).and_then(|d| d.shape(id)).map(|s| (s.id, s.fold.is_some()))
+        } else {
+            None
+        };
+        if let Some((id, folded)) = fold_target {
+            // egui spells the key "Slash"; the menu shows the character
+            let ctrl = ui.ctx().format_shortcut(&sc(Modifiers::COMMAND, Key::Slash)).replace("Slash", "/");
+            if ui.add(egui::Button::new(self.t(if folded { "Expand" } else { "Collapse" })).shortcut_text(ctrl)).clicked() {
+                ui.close_menu();
+                self.mind_toggle(id);
+            }
+            ui.separator();
         }
         let one_conn = if self.sel_conns.len() == 1 && self.sel_shapes.is_empty() {
             self.diag().and_then(|d| d.connectors.iter().find(|c| c.id == self.sel_conns[0]).map(|c| (c.clone(), d.kind)))

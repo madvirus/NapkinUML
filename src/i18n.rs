@@ -308,6 +308,8 @@ fn korean(s: &str) -> Option<&'static str> {
         "Central Topic" => "중심 토픽",
         "Topic" => "토픽",
         "Branch" => "가지",
+        "Collapse" => "접기",
+        "Expand" => "펼치기",
         "Structure" => "구조",
         "Logic Chart" => "논리 흐름도",
         "Org Chart" => "조직도",

@@ -51,8 +51,14 @@ impl UmlApp {
             self.drag_finish(cam, d);
         }
 
+        // a mind map topic's fold knob: a click folds or unfolds it
+        let knob = if self.tool == Tool::Select && d.kind == DiagramKind::MindMap { pointer.and_then(|p| Self::mind_knob_at(d, cam, p)) } else { None };
+        if let (true, Some(id)) = (resp.clicked_by(PointerButton::Primary), knob) {
+            self.mind_toggle(id);
+        }
+
         // clicks
-        if resp.clicked_by(PointerButton::Primary) {
+        if resp.clicked_by(PointerButton::Primary) && knob.is_none() {
             if let Some(p) = pointer {
                 // a click on an activation bar selects the bar
                 let bar_hit = self.tool == Tool::Select && !shift && self.bar_click(d, cam, p);
@@ -99,7 +105,7 @@ impl UmlApp {
                 }
             }
         }
-        if resp.double_clicked_by(PointerButton::Primary) && self.tool == Tool::Select {
+        if resp.double_clicked_by(PointerButton::Primary) && self.tool == Tool::Select && knob.is_none() {
             if let Some(p) = pointer {
                 self.double_click(cam, d, p);
             }

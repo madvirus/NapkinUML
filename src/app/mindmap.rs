@@ -52,6 +52,10 @@ impl UmlApp {
     /// it (evening out the sides only past `REBALANCE_AFTER`). One undo step; selected with its name ready to type over.
     pub(super) fn mind_add(&mut self, id: u64, child: bool) {
         use crate::mindlayout::{self as ml, Grow};
+        if child {
+            // a folded topic opens to show its new sub-topic among the others
+            self.mind_set_fold(id, false);
+        }
         let Some(d) = self.diag() else { return };
         if d.kind != DiagramKind::MindMap {
             return;
@@ -143,6 +147,13 @@ impl UmlApp {
             return;
         };
         let target = crate::mindlayout::drop_parent(d, id).map(|t| t.0);
+        if let Some(t) = target {
+            // dropped next to a folded topic: it opens to take the new sub-topic
+            if self.mind_set_fold(t, false) {
+                crate::mindlayout::layout(self.diag_mut().unwrap());
+            }
+        }
+        let Some(d) = self.diag() else { return };
         let old = d.connectors.iter().position(|c| c.kind == ConnKind::Branch && c.to == id && c.from != id && d.shape(c.from).map(|s| s.kind.is_topic()).unwrap_or(false));
         let fresh = self.project.as_mut().map(|p| p.fresh_id());
         let Some(dm) = self.diag_mut() else { return };
@@ -181,6 +192,63 @@ impl UmlApp {
             (None, None) => {}
         }
         crate::mindlayout::layout_keep(dm, Some(id));
+    }
+
+    /// The topic whose fold knob is under a screen point (see `render::fold_knob`).
+    pub(super) fn mind_knob_at(d: &Diagram, cam: &Cam, p: Pos2) -> Option<u64> {
+        crate::mindlayout::fold_knobs(d)
+            .into_iter()
+            .find(|(id, g, _)| {
+                d.shape(*id)
+                    .map(|s| {
+                        let (c, r) = render::fold_knob(cam, s, *g);
+                        (p - c).length() <= r + 2.0
+                    })
+                    .unwrap_or(false)
+            })
+            .map(|k| k.0)
+    }
+
+    /// Fold (`fold`) or unfold a topic of the diagram shown, without an undo step or layout.
+    /// True when it changed.
+    fn mind_set_fold(&mut self, id: u64, fold: bool) -> bool {
+        let Some(active) = self.active else { return false };
+        let Some(p) = self.project.as_mut() else { return false };
+        let mut next = p.next_id;
+        let Some(d) = p.diagram_mut(active) else { return false };
+        let changed = if fold {
+            crate::model::mind_fold(d, id)
+        } else {
+            crate::model::mind_unfold(d, id, || {
+                next += 1;
+                next - 1
+            })
+        };
+        p.next_id = next;
+        changed
+    }
+
+    /// Fold a topic's sub-topics away, or unfold a folded topic: one undo step, then the
+    /// structure places everything again. Folded shapes and lines leave the selection.
+    pub(super) fn mind_toggle(&mut self, id: u64) {
+        let Some(d) = self.diag() else { return };
+        if !crate::model::mind_foldable(d, id) {
+            return;
+        }
+        let folded = d.shape(id).map(|s| s.fold.is_some()).unwrap_or(false);
+        self.commit_edit();
+        let undo_before = self.undo.len();
+        self.checkpoint();
+        if !self.mind_set_fold(id, !folded) {
+            self.undo.truncate(undo_before);
+            return;
+        }
+        let Some(dm) = self.diag_mut() else { return };
+        crate::mindlayout::layout(dm);
+        let shapes: std::collections::HashSet<u64> = dm.shapes.iter().map(|s| s.id).collect();
+        let conns: std::collections::HashSet<u64> = dm.connectors.iter().map(|c| c.id).collect();
+        self.sel_shapes.retain(|x| shapes.contains(x));
+        self.sel_conns.retain(|x| conns.contains(x));
     }
 
     /// While a topic is dragged: outline the topic it would join and draw a dashed line from

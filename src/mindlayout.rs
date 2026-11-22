@@ -65,15 +65,21 @@ struct Tree {
     parent: HashMap<u64, u64>,
     kids: HashMap<u64, Vec<u64>>,
     structure: HashMap<u64, u8>,
+    /// How many topics each folded topic keeps folded away.
+    folded: HashMap<u64, usize>,
 }
 
 impl Tree {
     fn new(d: &Diagram) -> Self {
         let mut rect = HashMap::new();
         let mut structure = HashMap::new();
+        let mut folded = HashMap::new();
         for s in d.shapes.iter().filter(|s| s.kind.is_topic()) {
             rect.insert(s.id, R { x: s.x, y: s.y, w: s.w, h: s.h });
             structure.insert(s.id, s.orient.min(ORG_CHART));
+            if let Some(f) = &s.fold {
+                folded.insert(s.id, f.topics());
+            }
         }
         let mut parent = HashMap::new();
         let mut kids: HashMap<u64, Vec<u64>> = HashMap::new();
@@ -83,7 +89,7 @@ impl Tree {
                 kids.entry(c.from).or_default().push(c.to);
             }
         }
-        Tree { rect, parent, kids, structure }
+        Tree { rect, parent, kids, structure, folded }
     }
 
     fn kids(&self, id: u64) -> &[u64] {
@@ -126,9 +132,10 @@ impl Tree {
         v.into_iter().map(|(_, id)| id).collect()
     }
 
-    /// How many topics a sub-tree holds: the topic and every level below it.
+    /// How many topics a sub-tree holds: the topic and every level below it, folded ones too
+    /// (so folding or unfolding a topic never moves topics to the other side).
     fn size(&self, id: u64) -> usize {
-        1 + self.kids(id).iter().map(|c| self.size(*c)).sum::<usize>()
+        1 + self.folded.get(&id).copied().unwrap_or(0) + self.kids(id).iter().map(|c| self.size(*c)).sum::<usize>()
     }
 
     /// Height a topic's sub-tree takes when it grows sideways.
@@ -194,6 +201,27 @@ impl Tree {
 /// The children of a topic, in line order.
 pub fn children(d: &Diagram, id: u64) -> Vec<u64> {
     Tree::new(d).kids(id).to_vec()
+}
+
+/// Every topic that has a fold knob (a Topic below another topic with sub-topics, or one folded
+/// already; never a central topic): the topic, the side its sub-topics grow to (a mind map
+/// root's right), and how many topics it has folded away (None while unfolded).
+pub fn fold_knobs(d: &Diagram) -> Vec<(u64, Grow, Option<usize>)> {
+    if d.kind != crate::model::DiagramKind::MindMap {
+        return vec![];
+    }
+    let t = Tree::new(d);
+    d.shapes
+        .iter()
+        .filter(|s| s.kind == ShapeKind::Topic && (s.fold.is_some() || (t.parent.contains_key(&s.id) && !t.kids(s.id).is_empty())))
+        .map(|s| {
+            let g = match t.grow(s.id).unwrap_or(Grow::Right) {
+                Grow::Both => Grow::Right,
+                g => g,
+            };
+            (s.id, g, s.fold.as_ref().map(|f| f.topics()))
+        })
+        .collect()
 }
 
 /// Which way a topic's sub-topics grow (None when its parents loop).
@@ -447,6 +475,38 @@ mod tests {
         add_kid(&mut d, pay, "Coupon");
         layout(&mut d);
         assert!(right_of(&d, "Products"));
+    }
+
+    #[test]
+    fn fold_keeps_sub_topics_until_unfolded() {
+        use crate::model::{mind_fold, mind_foldable, mind_unfold};
+        let mut d = shop();
+        layout(&mut d);
+        let (shapes, conns) = (d.shapes.len(), d.connectors.len());
+        let (root, products) = (id(&d, "Online Shop"), id(&d, "Products"));
+        // never the central topic
+        assert!(!mind_foldable(&d, root));
+        assert!(mind_fold(&mut d, products));
+        assert_eq!(d.shapes.len(), shapes - 2);
+        assert!(!d.shapes.iter().any(|s| s.name == "Stock"));
+        let knobs = fold_knobs(&d);
+        assert!(knobs.iter().any(|k| k.0 == products && k.2 == Some(2)));
+        layout(&mut d);
+        // a pasted copy took Stock's id meanwhile: it comes back under a new one
+        let stock_id = d.shape(products).unwrap().fold.as_ref().unwrap().shapes.iter().find(|s| s.name == "Stock").unwrap().id;
+        let mut copy = d.shape(products).unwrap().clone();
+        copy.id = stock_id;
+        copy.fold = None;
+        d.shapes.push(copy);
+        let mut next = 10_000;
+        assert!(mind_unfold(&mut d, products, || {
+            next += 1;
+            next
+        }));
+        assert_eq!((d.shapes.len(), d.connectors.len()), (shapes + 1, conns));
+        let stock = id(&d, "Stock");
+        assert_ne!(stock, stock_id);
+        assert_eq!(crate::model::mind_parent(&d, stock), Some(products));
     }
 
     #[test]

@@ -65,7 +65,7 @@ impl DiagramKind {
             DiagramKind::Package => "Shows packages and the dependencies, imports and merges between them.",
             DiagramKind::Erd => "Shows database tables, their columns and the relationships between them.",
             DiagramKind::Network => "Shows network devices (routers, switches, firewalls, servers, PCs, phones...), the network zones they sit in and how they are connected.",
-            DiagramKind::MindMap => "Shows one central topic with the ideas that branch out of it, and their sub-ideas. Select a topic and press Tab to add a sub-topic, Enter to add a sibling topic. The central topic picks the structure (mind map, logic chart or org chart); topics are placed automatically, and a dragged topic joins the topic it is dropped next to.",
+            DiagramKind::MindMap => "Shows one central topic with the ideas that branch out of it, and their sub-ideas. Select a topic and press Tab to add a sub-topic, Enter to add a sibling topic. The central topic picks the structure (mind map, logic chart or org chart); topics are placed automatically, and a dragged topic joins the topic it is dropped next to. The small circle beside a topic (or Ctrl+/) folds and unfolds its sub-topics.",
         }
     }
 }
@@ -532,6 +532,92 @@ pub struct Shape {
     /// Where the name shown beside the shape was dragged to (offset from its usual place).
     #[serde(default)]
     pub label_offset: (f32, f32),
+    /// A folded mind map topic: its sub-topics (every level) and their lines, kept out of the
+    /// diagram until it is unfolded.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fold: Option<Box<Fold>>,
+}
+
+/// What a folded mind map topic keeps: the shapes below it and every line touching them.
+#[derive(Serialize, Deserialize, Clone, Debug, Default)]
+pub struct Fold {
+    pub shapes: Vec<Shape>,
+    pub connectors: Vec<Connector>,
+}
+
+impl Fold {
+    /// How many topics are folded away, nested folds included.
+    pub fn topics(&self) -> usize {
+        self.shapes.iter().filter(|s| s.kind.is_topic()).map(|s| 1 + s.fold.as_ref().map(|f| f.topics()).unwrap_or(0)).sum()
+    }
+
+    /// The largest id inside, nested folds included.
+    pub fn max_id(&self) -> u64 {
+        let s = self.shapes.iter().map(|s| s.id.max(s.fold.as_ref().map(|f| f.max_id()).unwrap_or(0))).max().unwrap_or(0);
+        s.max(self.connectors.iter().map(|c| c.id).max().unwrap_or(0))
+    }
+}
+
+/// Whether a mind map topic can fold: a Topic (never the central topic) that branches off
+/// another topic and has sub-topics, or is folded already.
+pub fn mind_foldable(d: &Diagram, id: u64) -> bool {
+    let Some(s) = d.shape(id) else { return false };
+    s.kind == ShapeKind::Topic && (s.fold.is_some() || (mind_parent(d, id).is_some() && d.connectors.iter().any(|c| c.kind == ConnKind::Branch && c.from == id && c.to != id && d.shape(c.to).map(|k| k.kind.is_topic()).unwrap_or(false))))
+}
+
+/// Fold topic `id`: its sub-topics (every level) leave the diagram with every line touching
+/// them and are kept in it. False when there is nothing to fold.
+pub fn mind_fold(d: &mut Diagram, id: u64) -> bool {
+    if !mind_foldable(d, id) || d.shape(id).map(|s| s.fold.is_some()).unwrap_or(true) {
+        return false;
+    }
+    let below: std::collections::HashSet<u64> = mind_subtree(d, &[id]).into_iter().filter(|x| *x != id).collect();
+    if below.is_empty() {
+        return false;
+    }
+    let mut fold = Fold::default();
+    let (keep, gone): (Vec<Shape>, Vec<Shape>) = std::mem::take(&mut d.shapes).into_iter().partition(|s| !below.contains(&s.id));
+    d.shapes = keep;
+    fold.shapes = gone;
+    let (keep, gone): (Vec<Connector>, Vec<Connector>) = std::mem::take(&mut d.connectors).into_iter().partition(|c| !below.contains(&c.from) && !below.contains(&c.to));
+    d.connectors = keep;
+    fold.connectors = gone;
+    if let Some(s) = d.shape_mut(id) {
+        s.fold = Some(Box::new(fold));
+    }
+    true
+}
+
+/// Unfold topic `id`: what it kept comes back into the diagram. A kept shape or line whose id
+/// is taken meanwhile (a pasted copy) gets a new one from `fresh`. False when it isn't folded.
+pub fn mind_unfold(d: &mut Diagram, id: u64, mut fresh: impl FnMut() -> u64) -> bool {
+    let Some(fold) = d.shape_mut(id).and_then(|s| s.fold.take()) else { return false };
+    let Fold { mut shapes, mut connectors } = *fold;
+    let mut taken: std::collections::HashSet<u64> = d.shapes.iter().map(|s| s.id).chain(d.connectors.iter().map(|c| c.id)).collect();
+    let mut map = std::collections::HashMap::new();
+    for s in shapes.iter_mut() {
+        if !taken.insert(s.id) {
+            let n = fresh();
+            map.insert(s.id, n);
+            s.id = n;
+            taken.insert(n);
+        }
+    }
+    for c in connectors.iter_mut() {
+        if !taken.insert(c.id) {
+            c.id = fresh();
+            taken.insert(c.id);
+        }
+        if let Some(n) = map.get(&c.from) {
+            c.from = *n;
+        }
+        if let Some(n) = map.get(&c.to) {
+            c.to = *n;
+        }
+    }
+    d.shapes.extend(shapes);
+    d.connectors.extend(connectors);
+    true
 }
 
 /// A line between two sections of an alternative combined fragment.
@@ -583,6 +669,7 @@ impl Shape {
             hide_icon: false,
             hide_attributes: false,
             hide_operations: false,
+            fold: None,
             splits: Vec::new(),
             act_spans: Vec::new(),
             dividers: None,
@@ -1037,7 +1124,7 @@ impl Project {
         for d in &self.diagrams {
             max = max.max(d.id);
             for s in &d.shapes {
-                max = max.max(s.id);
+                max = max.max(s.id).max(s.fold.as_ref().map(|f| f.max_id()).unwrap_or(0));
             }
             for c in &d.connectors {
                 max = max.max(c.id);
