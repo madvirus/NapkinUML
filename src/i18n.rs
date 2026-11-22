@@ -85,7 +85,7 @@ fn korean(s: &str) -> Option<&'static str> {
         "Save as..." => "다른 이름으로 저장...",
         "Save Project" => "프로젝트 저장",
         "Export" => "내보내기",
-        "Active Diagram as Image (PNG)..." => "이미지로 액티브 다이어그램 (PNG)...",
+        "Active Diagram as Image (PNG)..." => "활성 다이어그램을 이미지로 (PNG)...",
         "Project Properties..." => "프로젝트 프로퍼티...",
         "Close Project" => "프로젝트 닫기",
         "Exit" => "나가기",
