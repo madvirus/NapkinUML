@@ -1110,7 +1110,29 @@ pub fn conn_path(dkind: DiagramKind, c: &Connector, from: &Shape, to: &Shape, de
 /// curve from the side of the parent topic facing the child to the near side of the child,
 /// leaving and arriving level. None when the topics overlap side to side (a straight line then).
 fn branch_curve(c: &Connector, from: &Shape, to: &Shape) -> Option<Vec<(f32, f32)>> {
-    if c.kind != ConnKind::Branch || c.style != STYLE_FOLLOW_DIAGRAM || !c.points.is_empty() || c.from_anchor.is_some() || c.to_anchor.is_some() || from.id == to.id {
+    if c.kind != ConnKind::Branch || c.style != STYLE_FOLLOW_DIAGRAM || !c.points.is_empty() || from.id == to.id {
+        return None;
+    }
+    if c.from_anchor == Some((0.5, 1.0)) && c.to_anchor == Some((0.5, 0.0)) {
+        // downward (an org chart): leaving down from the parent's bottom, arriving down at the top
+        let (sx, sy, ex, ey) = (from.center().0, from.y + from.h, to.center().0, to.y);
+        if ey - sy < 4.0 {
+            return None;
+        }
+        let k = (ey - sy) * 0.5;
+        let n = 20;
+        return Some(
+            (0..=n)
+                .map(|i| {
+                    let t = i as f32 / n as f32;
+                    let u = 1.0 - t;
+                    let (b0, b1, b2, b3) = (u * u * u, 3.0 * u * u * t, 3.0 * u * t * t, t * t * t);
+                    (b0 * sx + b1 * sx + b2 * ex + b3 * ex, b0 * sy + b1 * (sy + k) + b2 * (ey - k) + b3 * ey)
+                })
+                .collect(),
+        );
+    }
+    if c.from_anchor.is_some() || c.to_anchor.is_some() {
         return None;
     }
     let right = to.center().0 >= from.center().0;
@@ -1801,6 +1823,7 @@ pub fn draw_icon(painter: &Painter, rect: Rect, tool: Tool, look: &Look, opts: &
                 hide_attributes: false,
                 hide_operations: false,
             fold: None,
+            branch_style: None,
                 splits: Vec::new(),
                 act_spans: Vec::new(),
                 dividers: None,

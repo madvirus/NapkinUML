@@ -519,7 +519,8 @@ impl UmlApp {
                     ui.close_menu();
                 }
             }
-            if !(dkind == DiagramKind::Sequence && c.kind.is_message()) {
+            // a mind map branch takes its style from the topic it leaves
+            if !(dkind == DiagramKind::Sequence && c.kind.is_message()) && !(dkind == DiagramKind::MindMap && c.kind == ConnKind::Branch) {
                 ui.separator();
                 if self.menu_item(ui, "Straight Line", None, !c.points.is_empty()) {
                     self.set_line_shape(c.id, false);

@@ -79,6 +79,7 @@ impl UmlApp {
             hide_attributes: false,
             hide_operations: false,
             fold: None,
+            branch_style: None,
             splits: Vec::new(),
             act_spans: Vec::new(),
             dividers: None,

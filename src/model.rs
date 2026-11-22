@@ -536,6 +536,11 @@ pub struct Shape {
     /// diagram until it is unfolded.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fold: Option<Box<Fold>>,
+    /// A mind map topic: how the branches to its sub-topics are drawn (a `render::STYLE_*`
+    /// code from `mindlayout::BRANCH_STYLES`). None = the same as its parent topic's (a root's:
+    /// its structure's own).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub branch_style: Option<u8>,
 }
 
 /// What a folded mind map topic keeps: the shapes below it and every line touching them.
@@ -670,6 +675,7 @@ impl Shape {
             hide_attributes: false,
             hide_operations: false,
             fold: None,
+            branch_style: None,
             splits: Vec::new(),
             act_spans: Vec::new(),
             dividers: None,

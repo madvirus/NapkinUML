@@ -8,7 +8,7 @@
 //! to bottom, or left to right in an org chart), so moving a topic among its siblings reorders it.
 
 use crate::model::{ConnKind, Diagram, ShapeKind};
-use crate::render::{STYLE_FOLLOW_DIAGRAM, STYLE_ROUND_RECTILINEAR};
+use crate::render::{STYLE_CURVE, STYLE_FOLLOW_DIAGRAM, STYLE_OBLIQUE, STYLE_RECTILINEAR, STYLE_ROUND_RECTILINEAR};
 use std::collections::{HashMap, HashSet};
 
 pub const MIND_MAP: u8 = 0;
@@ -28,6 +28,8 @@ pub const GAP_H: f32 = 20.0;
 /// the other (counting every level below the root), so adding a topic doesn't shuffle the map
 /// every time.
 pub const REBALANCE_AFTER: usize = 2;
+/// The branch styles a topic offers for the branches to its sub-topics, in menu order.
+pub const BRANCH_STYLES: [(u8, &str); 4] = [(STYLE_CURVE, "Curve"), (STYLE_OBLIQUE, "Straight"), (STYLE_RECTILINEAR, "Rectilinear"), (STYLE_ROUND_RECTILINEAR, "Round rectilinear")];
 /// A dropped topic further than this (weighted) from every place it could join floats free.
 pub const JOIN_REACH: f32 = 200.0;
 
@@ -67,6 +69,8 @@ struct Tree {
     structure: HashMap<u64, u8>,
     /// How many topics each folded topic keeps folded away.
     folded: HashMap<u64, usize>,
+    /// The branch style each topic sets for its own branches (`Shape::branch_style`).
+    branch: HashMap<u64, u8>,
 }
 
 impl Tree {
@@ -74,7 +78,11 @@ impl Tree {
         let mut rect = HashMap::new();
         let mut structure = HashMap::new();
         let mut folded = HashMap::new();
+        let mut branch = HashMap::new();
         for s in d.shapes.iter().filter(|s| s.kind.is_topic()) {
+            if let Some(b) = s.branch_style {
+                branch.insert(s.id, b);
+            }
             rect.insert(s.id, R { x: s.x, y: s.y, w: s.w, h: s.h });
             structure.insert(s.id, s.orient.min(ORG_CHART));
             if let Some(f) = &s.fold {
@@ -89,7 +97,28 @@ impl Tree {
                 kids.entry(c.from).or_default().push(c.to);
             }
         }
-        Tree { rect, parent, kids, structure, folded }
+        Tree { rect, parent, kids, structure, folded, branch }
+    }
+
+    /// The branch style of the branches leaving topic `id`: its own, else the nearest topic's
+    /// above it that sets one, else its structure's (a curve; round right angles in an org chart).
+    fn branch_style(&self, id: u64, org: bool) -> u8 {
+        let mut seen = HashSet::new();
+        let mut at = id;
+        loop {
+            if let Some(b) = self.branch.get(&at) {
+                return *b;
+            }
+            match self.parent.get(&at) {
+                Some(p) if seen.insert(at) => at = *p,
+                _ => break,
+            }
+        }
+        if org {
+            STYLE_ROUND_RECTILINEAR
+        } else {
+            STYLE_CURVE
+        }
     }
 
     fn kids(&self, id: u64) -> &[u64] {
@@ -316,13 +345,29 @@ pub fn layout_keep(d: &mut Diagram, keep: Option<u64>) {
             }
         }
     }
-    // the branches of the tree follow its structure
+    // the branches of the tree follow its structure, drawn in the branch style their parent topic
+    // sets (or inherits): from the parent's side facing the sub-topic to the sub-topic's near side
+    let centre: HashMap<u64, f32> = d.shapes.iter().map(|s| (s.id, s.center().0)).collect();
     let mut done: HashSet<u64> = HashSet::new();
     for c in d.connectors.iter_mut() {
         if c.kind != ConnKind::Branch || t.parent.get(&c.to) != Some(&c.from) || !done.insert(c.to) {
             continue;
         }
-        let (style, fa, ta) = if org.contains(&c.from) { (STYLE_ROUND_RECTILINEAR, Some((0.5, 1.0)), Some((0.5, 0.0))) } else { (STYLE_FOLLOW_DIAGRAM, None, None) };
+        let down = org.contains(&c.from);
+        let right = centre.get(&c.to).copied().unwrap_or(0.0) >= centre.get(&c.from).copied().unwrap_or(0.0);
+        let (fa, ta) = if down {
+            (Some((0.5, 1.0)), Some((0.5, 0.0)))
+        } else if right {
+            (Some((1.0, 0.5)), Some((0.0, 0.5)))
+        } else {
+            (Some((0.0, 0.5)), Some((1.0, 0.5)))
+        };
+        let (style, fa, ta) = match t.branch_style(c.from, down) {
+            // a level S curve sideways (render::branch_curve); downward it keeps its ends
+            STYLE_CURVE if !down => (STYLE_FOLLOW_DIAGRAM, None, None),
+            STYLE_CURVE => (STYLE_FOLLOW_DIAGRAM, fa, ta),
+            s => (s, fa, ta),
+        };
         if c.style != style || c.from_anchor != fa || c.to_anchor != ta || !c.points.is_empty() {
             c.style = style;
             c.from_anchor = fa;
@@ -507,6 +552,30 @@ mod tests {
         let stock = id(&d, "Stock");
         assert_ne!(stock, stock_id);
         assert_eq!(crate::model::mind_parent(&d, stock), Some(products));
+    }
+
+    #[test]
+    fn branches_take_the_style_of_the_topic_they_leave() {
+        let mut d = shop();
+        let (root, products, catalog) = (id(&d, "Online Shop"), id(&d, "Products"), id(&d, "Catalog"));
+        let style = |d: &Diagram, to: u64| d.connectors.iter().find(|c| c.kind == ConnKind::Branch && c.to == to).map(|c| (c.style, c.from_anchor)).unwrap();
+        layout(&mut d);
+        assert_eq!(style(&d, products), (STYLE_FOLLOW_DIAGRAM, None));
+        // the central topic's style reaches every level that sets none
+        d.shape_mut(root).unwrap().branch_style = Some(STYLE_RECTILINEAR);
+        layout(&mut d);
+        assert_eq!(style(&d, products), (STYLE_RECTILINEAR, Some((1.0, 0.5))));
+        assert_eq!(style(&d, catalog).0, STYLE_RECTILINEAR);
+        // a topic's own style is for its branches only
+        d.shape_mut(products).unwrap().branch_style = Some(STYLE_OBLIQUE);
+        layout(&mut d);
+        assert_eq!(style(&d, products).0, STYLE_RECTILINEAR);
+        assert_eq!(style(&d, catalog).0, STYLE_OBLIQUE);
+        // a branch's own style doesn't last
+        let i = d.connectors.iter().position(|c| c.to == catalog).unwrap();
+        d.connectors[i].style = STYLE_CURVE;
+        layout(&mut d);
+        assert_eq!(style(&d, catalog).0, STYLE_OBLIQUE);
     }
 
     #[test]

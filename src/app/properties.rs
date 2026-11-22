@@ -368,6 +368,26 @@ impl UmlApp {
                 });
                 ui.end_row();
             }
+            if d.kind == DiagramKind::MindMap && s.kind.is_topic() {
+                // the style of the branches to this topic's sub-topics (none: as its parent's)
+                let root = crate::mindlayout::is_root(d, s.id);
+                let unset = if root { "(Default)" } else { "Same as parent topic" };
+                let cur = s.branch_style.and_then(|b| crate::mindlayout::BRANCH_STYLES.iter().find(|(v, _)| *v == b)).map(|(_, l)| *l).unwrap_or(unset);
+                ui.label(tr(lang, "Branch Style"));
+                egui::ComboBox::from_id_salt("mind_branch_style").selected_text(tr(lang, cur)).show_ui(ui, |ui| {
+                    if ui.selectable_label(s.branch_style.is_none(), tr(lang, unset)).clicked() && s.branch_style.is_some() {
+                        s.branch_style = None;
+                        field_changed = Some(18);
+                    }
+                    for (v, l) in crate::mindlayout::BRANCH_STYLES {
+                        if ui.selectable_label(s.branch_style == Some(v), tr(lang, l)).clicked() && s.branch_style != Some(v) {
+                            s.branch_style = Some(v);
+                            field_changed = Some(18);
+                        }
+                    }
+                });
+                ui.end_row();
+            }
             if s.kind == ShapeKind::RequiredInterface {
                 let dirs = ["Right", "Down", "Left", "Up"];
                 ui.label(tr(lang, "Opening"));
@@ -606,7 +626,12 @@ impl UmlApp {
             });
             ui.weak(tr(lang, "An arrow shows at a navigable end when the other end is not navigable."));
         }
-        if !(d.kind == DiagramKind::Sequence && c.kind.is_message()) {
+        // a mind map branch is drawn in the branch style of the topic it leaves
+        let mind_branch = d.kind == DiagramKind::MindMap && c.kind == ConnKind::Branch;
+        if mind_branch {
+            ui.weak(tr(lang, "A branch is drawn in the branch style of the topic it comes from."));
+        }
+        if !(d.kind == DiagramKind::Sequence && c.kind.is_message()) && !mind_branch {
             ui.horizontal(|ui| {
                 ui.label(tr(lang, "Connector Style"));
                 let shown = render::LINE_STYLES.iter().find(|(v, _)| *v == c.style).map(|(_, n)| *n).unwrap_or("Follow diagram");
@@ -621,7 +646,7 @@ impl UmlApp {
             });
         }
         let mut line_action: Option<bool> = None;
-        if !(d.kind == DiagramKind::Sequence && c.kind.is_message()) {
+        if !(d.kind == DiagramKind::Sequence && c.kind.is_message()) && !mind_branch {
             ui.horizontal(|ui| {
                 if ui.button(tr(lang, "Straight Line")).clicked() {
                     line_action = Some(false);
