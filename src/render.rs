@@ -1062,6 +1062,13 @@ pub const STYLE_CURVE: u8 = 2;
 pub const STYLE_FOLLOW_DIAGRAM: u8 = 3;
 pub const STYLE_ROUND_OBLIQUE: u8 = 4;
 pub const STYLE_ROUND_RECTILINEAR: u8 = 5;
+/// Mind map branches only (set on the topic they leave, see `mindlayout::BRANCH_STYLES`): a
+/// short stem out of the parent, then a quarter curve that leaves across and arrives level.
+pub const STYLE_ARC: u8 = 6;
+/// Mind map branches only: a stem, a slanted run to the child's height, then level into it.
+pub const STYLE_BENT: u8 = 7;
+/// Mind map branches only: `STYLE_BENT` with its corners rounded.
+pub const STYLE_ROUND_BENT: u8 = 8;
 
 /// Names in the original's order: the per-line list starts with "Follow diagram" (v.bjl.u.e).
 pub const LINE_STYLES: [(u8, &str); 6] = [
@@ -1094,6 +1101,9 @@ pub fn conn_path(dkind: DiagramKind, c: &Connector, from: &Shape, to: &Shape, de
     }
     if let Some(curve) = branch_curve(c, from, to) {
         return curve;
+    }
+    if let Some(path) = branch_shape(c, from, to) {
+        return path;
     }
     let style = effective_style(c, default_style);
     let rect = matches!(style, STYLE_RECTILINEAR | STYLE_ROUND_RECTILINEAR);
@@ -1153,6 +1163,43 @@ fn branch_curve(c: &Connector, from: &Shape, to: &Shape) -> Option<Vec<(f32, f32
             })
             .collect(),
     )
+}
+
+/// A mind map branch in one of the branch-only styles (arc, bent, round bent), between the ends
+/// the layout fixed (the parent's side facing the child, the child's near side). Each starts with
+/// a stem half way to the child (where its siblings' branches part), so the branches of one topic
+/// share it. None for other lines, or when the ends are too close along the way the tree grows.
+fn branch_shape(c: &Connector, from: &Shape, to: &Shape) -> Option<Vec<(f32, f32)>> {
+    if c.kind != ConnKind::Branch || !matches!(c.style, STYLE_ARC | STYLE_BENT | STYLE_ROUND_BENT) || !c.points.is_empty() || from.id == to.id {
+        return None;
+    }
+    let (fa, ta) = (c.from_anchor?, c.to_anchor?);
+    let (s, e) = (anchor_point(from, fa), anchor_point(to, ta));
+    // work along the way the tree grows (u) and across it (v)
+    let down = fa.1 >= 0.999 && (fa.0 - 0.5).abs() < 0.01;
+    let (du, dv) = if down { (e.1 - s.1, e.0 - s.0) } else { (e.0 - s.0, e.1 - s.1) };
+    if du.abs() < 4.0 {
+        return None;
+    }
+    let back = |(u, v): (f32, f32)| if down { (s.0 + v, s.1 + u) } else { (s.0 + u, s.1 + v) };
+    let m = du * 0.5;
+    let local: Vec<(f32, f32)> = match c.style {
+        STYLE_ARC => {
+            let n = 16;
+            std::iter::once((0.0, 0.0))
+                .chain((0..=n).map(|i| {
+                    let t = i as f32 / n as f32;
+                    let w = 1.0 - t;
+                    // quadratic: from the stem's end, bending through (m, dv), arriving level
+                    (w * w * m + 2.0 * w * t * m + t * t * du, 2.0 * w * t * dv + t * t * dv)
+                }))
+                .collect()
+        }
+        _ => vec![(0.0, 0.0), (m, 0.0), (m + (du - m) * 0.5, dv), (du, dv)],
+    };
+    let mut path: Vec<(f32, f32)> = local.into_iter().map(back).collect();
+    path.dedup_by(|a, b| (a.0 - b.0).abs() < 0.01 && (a.1 - b.1).abs() < 0.01);
+    Some(if c.style == STYLE_ROUND_BENT { round_corners(&path, 10.0) } else { path })
 }
 
 /// Right-angle routing: through the bend points with horizontal/vertical runs only.

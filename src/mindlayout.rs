@@ -8,7 +8,7 @@
 //! to bottom, or left to right in an org chart), so moving a topic among its siblings reorders it.
 
 use crate::model::{ConnKind, Diagram, ShapeKind};
-use crate::render::{STYLE_CURVE, STYLE_FOLLOW_DIAGRAM, STYLE_OBLIQUE, STYLE_RECTILINEAR, STYLE_ROUND_RECTILINEAR};
+use crate::render::{STYLE_ARC, STYLE_BENT, STYLE_CURVE, STYLE_FOLLOW_DIAGRAM, STYLE_OBLIQUE, STYLE_RECTILINEAR, STYLE_ROUND_BENT, STYLE_ROUND_RECTILINEAR};
 use std::collections::{HashMap, HashSet};
 
 pub const MIND_MAP: u8 = 0;
@@ -29,7 +29,15 @@ pub const GAP_H: f32 = 20.0;
 /// every time.
 pub const REBALANCE_AFTER: usize = 2;
 /// The branch styles a topic offers for the branches to its sub-topics, in menu order.
-pub const BRANCH_STYLES: [(u8, &str); 4] = [(STYLE_CURVE, "Curve"), (STYLE_OBLIQUE, "Straight"), (STYLE_RECTILINEAR, "Rectilinear"), (STYLE_ROUND_RECTILINEAR, "Round rectilinear")];
+pub const BRANCH_STYLES: [(u8, &str); 7] = [
+    (STYLE_ROUND_RECTILINEAR, "Round rectilinear"),
+    (STYLE_RECTILINEAR, "Rectilinear"),
+    (STYLE_OBLIQUE, "Straight"),
+    (STYLE_ARC, "Arc"),
+    (STYLE_CURVE, "Curve"),
+    (STYLE_BENT, "Bent"),
+    (STYLE_ROUND_BENT, "Round bent"),
+];
 /// A dropped topic further than this (weighted) from every place it could join floats free.
 pub const JOIN_REACH: f32 = 200.0;
 
@@ -610,6 +618,17 @@ mod tests {
         layout(&mut d);
         assert_eq!(style(&d, products), (STYLE_RECTILINEAR, Some((1.0, 0.5))));
         assert_eq!(style(&d, catalog).0, STYLE_RECTILINEAR);
+        // the branch-only styles keep the fixed ends their paths start from
+        d.shape_mut(root).unwrap().branch_style = Some(STYLE_ARC);
+        layout(&mut d);
+        assert_eq!(style(&d, products), (STYLE_ARC, Some((1.0, 0.5))));
+        let (a, b) = (d.shape(root).unwrap().clone(), d.shape(products).unwrap().clone());
+        let c = d.connectors.iter().find(|c| c.to == products).unwrap().clone();
+        let path = crate::render::conn_path(d.kind, &c, &a, &b, STYLE_FOLLOW_DIAGRAM);
+        assert_eq!(path.first().copied(), Some((a.x + a.w, a.center().1)));
+        assert_eq!(path.last().copied(), Some((b.x, b.center().1)));
+        d.shape_mut(root).unwrap().branch_style = Some(STYLE_RECTILINEAR);
+        layout(&mut d);
         // a topic's own style is for its branches only
         d.shape_mut(products).unwrap().branch_style = Some(STYLE_OBLIQUE);
         layout(&mut d);
