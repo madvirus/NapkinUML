@@ -400,6 +400,8 @@ pub fn layout_keep(d: &mut Diagram, keep: Option<u64>) {
     // the branches of the tree follow its structure, drawn in the branch style their parent topic
     // sets (or inherits): from the parent's side facing the sub-topic to the sub-topic's near side
     let centre: HashMap<u64, f32> = d.shapes.iter().map(|s| (s.id, s.center().0)).collect();
+    // an underlined topic's branches meet the line under its name (its bottom), not its middle
+    let under: HashSet<u64> = d.shapes.iter().filter(|s| s.underlined()).map(|s| s.id).collect();
     let mut done: HashSet<u64> = HashSet::new();
     for c in d.connectors.iter_mut() {
         if c.kind != ConnKind::Branch || t.parent.get(&c.to) != Some(&c.from) || !done.insert(c.to) {
@@ -409,10 +411,13 @@ pub fn layout_keep(d: &mut Diagram, keep: Option<u64>) {
         let right = centre.get(&c.to).copied().unwrap_or(0.0) >= centre.get(&c.from).copied().unwrap_or(0.0);
         let (fa, ta) = if down {
             (Some((0.5, 1.0)), Some((0.5, 0.0)))
-        } else if right {
-            (Some((1.0, 0.5)), Some((0.0, 0.5)))
         } else {
-            (Some((0.0, 0.5)), Some((1.0, 0.5)))
+            let (fy, ty) = (if under.contains(&c.from) { 1.0 } else { 0.5 }, if under.contains(&c.to) { 1.0 } else { 0.5 });
+            if right {
+                (Some((1.0, fy)), Some((0.0, ty)))
+            } else {
+                (Some((0.0, fy)), Some((1.0, ty)))
+            }
         };
         let (style, fa, ta) = match t.branch_style(c.from, down) {
             // a level S curve sideways (render::branch_curve); downward it keeps its ends
@@ -627,6 +632,11 @@ mod tests {
         let path = crate::render::conn_path(d.kind, &c, &a, &b, STYLE_FOLLOW_DIAGRAM);
         assert_eq!(path.first().copied(), Some((a.x + a.w, a.center().1)));
         assert_eq!(path.last().copied(), Some((b.x, b.center().1)));
+        // an underlined topic's branches meet the line under its name
+        d.shape_mut(root).unwrap().topic_shape = Some(crate::model::TOPIC_UNDERLINE);
+        layout(&mut d);
+        assert_eq!(style(&d, products), (STYLE_ARC, Some((1.0, 1.0))));
+        d.shape_mut(root).unwrap().topic_shape = None;
         d.shape_mut(root).unwrap().branch_style = Some(STYLE_RECTILINEAR);
         layout(&mut d);
         // a topic's own style is for its branches only

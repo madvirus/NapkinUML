@@ -65,7 +65,7 @@ impl DiagramKind {
             DiagramKind::Package => "Shows packages and the dependencies, imports and merges between them.",
             DiagramKind::Erd => "Shows database tables, their columns and the relationships between them.",
             DiagramKind::Network => "Shows network devices (routers, switches, firewalls, servers, PCs, phones...), the network zones they sit in and how they are connected.",
-            DiagramKind::MindMap => "Shows one central topic with the ideas that branch out of it, and their sub-ideas. Select a topic and press Tab to add a sub-topic, Enter to add a sibling topic. The central topic picks the structure (mind map, logic chart or org chart); topics are placed automatically, and a dragged topic joins the topic it is dropped next to. The small circle beside a topic (or Ctrl+/) folds and unfolds its sub-topics. While typing a topic's name, Shift+Enter starts a new line.",
+            DiagramKind::MindMap => "Shows one central topic with the ideas that branch out of it, and their sub-ideas. Select a topic and press Tab to add a sub-topic, Enter to add a sibling topic. The central topic picks the structure (mind map, logic chart or org chart); topics are placed automatically, and a dragged topic joins the topic it is dropped next to. The small circle beside a topic (or Ctrl+/) folds and unfolds its sub-topics. While typing a topic's name, Shift+Enter starts a new line. A topic's shape (capsule, rounded box or underline), border colour and border line (solid, dashed or none) are set in its properties.",
         }
     }
 }
@@ -541,7 +541,29 @@ pub struct Shape {
     /// its structure's own).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub branch_style: Option<u8>,
+    /// A mind map topic's outline: `TOPIC_CAPSULE`, `TOPIC_ROUNDED` or `TOPIC_UNDERLINE`.
+    /// None = its kind's own (a central topic's capsule, a topic's rounded box).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub topic_shape: Option<u8>,
+    /// A mind map topic's outline colour (None = the diagram's line colour).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub border_color: Option<[u8; 4]>,
+    /// A mind map topic's outline: `BORDER_SOLID` (None), `BORDER_DASHED` or `BORDER_NONE`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub border_style: Option<u8>,
 }
+
+/// Mind map topic outlines (`Shape::topic_shape`): the central topic's capsule, a topic's
+/// rounded box, or only a line under the name.
+pub const TOPIC_CAPSULE: u8 = 0;
+pub const TOPIC_ROUNDED: u8 = 1;
+pub const TOPIC_UNDERLINE: u8 = 2;
+pub const TOPIC_SHAPES: [(u8, &str); 3] = [(TOPIC_CAPSULE, "Capsule"), (TOPIC_ROUNDED, "Rounded rectangle"), (TOPIC_UNDERLINE, "Underline")];
+/// Mind map topic outline lines (`Shape::border_style`).
+pub const BORDER_SOLID: u8 = 0;
+pub const BORDER_DASHED: u8 = 1;
+pub const BORDER_NONE: u8 = 2;
+pub const BORDER_STYLES: [(u8, &str); 3] = [(BORDER_SOLID, "Solid"), (BORDER_DASHED, "Dashed"), (BORDER_NONE, "None")];
 
 /// What a folded mind map topic keeps: the shapes below it and every line touching them.
 #[derive(Serialize, Deserialize, Clone, Debug, Default)]
@@ -653,6 +675,14 @@ pub const PART_MIN: f32 = 30.0;
 pub const ALT_HEAD: f32 = 34.0;
 
 impl Shape {
+    /// A mind map topic's outline as drawn (its own choice, else its kind's).
+    pub fn topic_look(&self) -> u8 {
+        self.topic_shape.unwrap_or(if self.kind == ShapeKind::CentralTopic { TOPIC_CAPSULE } else { TOPIC_ROUNDED })
+    }
+    /// A topic drawn as a line under its name: its branches meet that line, not its middle.
+    pub fn underlined(&self) -> bool {
+        self.kind.is_topic() && self.topic_look() == TOPIC_UNDERLINE
+    }
     /// A shape with no name, text or styling: everything but its kind and place left empty.
     pub fn new(id: u64, kind: ShapeKind, x: f32, y: f32, w: f32, h: f32) -> Self {
         Shape {
@@ -676,6 +706,9 @@ impl Shape {
             hide_operations: false,
             fold: None,
             branch_style: None,
+            topic_shape: None,
+            border_color: None,
+            border_style: None,
             splits: Vec::new(),
             act_spans: Vec::new(),
             dividers: None,

@@ -559,6 +559,19 @@ fn wrapped_center(painter: &Painter, look: &Look, r: Rect, text: &str, font: Fon
     painter.galley(job_pos, galley, color);
 }
 
+/// A mind map topic's outline along `pts`: solid, dashed or not at all.
+fn topic_outline(painter: &Painter, pts: &[Pos2], stroke: Stroke, style: u8, zoom: f32) {
+    match style {
+        crate::model::BORDER_NONE => {}
+        crate::model::BORDER_DASHED => {
+            painter.extend(epaint::Shape::dashed_line(pts, stroke, (4.0 * zoom).max(2.0), (3.0 * zoom).max(1.5)));
+        }
+        _ => {
+            painter.add(epaint::Shape::line(pts.to_vec(), stroke));
+        }
+    }
+}
+
 /// A topic's name: each line (the name's own line breaks) centred, the block centred in `r`;
 /// a line too long for the box wraps.
 fn centered_lines(painter: &Painter, look: &Look, r: Rect, text: &str, font: FontId, color: Color32) {
@@ -831,14 +844,33 @@ pub fn draw_shape(painter: &Painter, cam: &Cam, shape: &Shape, look: &Look, opts
                 text_at(painter, look, c, Align2::CENTER_CENTER, &shape.name, f.clone(), tc);
             }
         }
-        CentralTopic => {
-            // a pill with a thicker outline and a larger name
-            painter.rect(r, (r.height() / 2.0).min(255.0), fill, Stroke::new(stroke.width * 1.8, line), StrokeKind::Middle);
-            centered_lines(painter, look, r.shrink2(Vec2::new(r.height().min(64.0 * z) * 0.3, 0.0)), &shape.name, font(look, cam, 1.2), tc);
-        }
-        Topic => {
-            painter.rect(r, (8.0 * z).min(r.height() / 2.0), fill, stroke, StrokeKind::Middle);
-            centered_lines(painter, look, r, &shape.name, f.clone(), tc);
+        CentralTopic | Topic => {
+            // the central topic: a thicker outline and a larger name; either kind may take any of
+            // the outlines (capsule, rounded box, a line under the name), colour and line
+            let central = shape.kind == CentralTopic;
+            let col = shape.border_color.map(|c| Color32::from_rgba_unmultiplied(c[0], c[1], c[2], c[3])).unwrap_or(line);
+            let border = Stroke::new(if central { stroke.width * 1.8 } else { stroke.width }, col);
+            let style = shape.border_style.unwrap_or(crate::model::BORDER_SOLID);
+            match shape.topic_look() {
+                crate::model::TOPIC_UNDERLINE => {
+                    // no box: only the colour the user picked behind the name, and the line under it
+                    if shape.fill.is_some() {
+                        painter.rect_filled(r, 0.0, fill);
+                    }
+                    topic_outline(painter, &[r.left_bottom(), r.right_bottom()], border, style, z);
+                }
+                sh => {
+                    let rad = if sh == crate::model::TOPIC_CAPSULE { r.height() / 2.0 } else { 8.0 * z }.min(r.height() / 2.0);
+                    if style == crate::model::BORDER_SOLID {
+                        painter.rect(r, rad.min(255.0), fill, border, StrokeKind::Middle);
+                    } else {
+                        painter.rect_filled(r, rad.min(255.0), fill);
+                        topic_outline(painter, &rounded_rect_points(r, rad), border, style, z);
+                    }
+                }
+            }
+            let (tr, tf) = if central { (r.shrink2(Vec2::new(r.height().min(64.0 * z) * 0.3, 0.0)), font(look, cam, 1.2)) } else { (r, f.clone()) };
+            centered_lines(painter, look, tr, &shape.name, tf, tc);
         }
         NetworkZone => {
             let rad = 8.0 * z;
@@ -1173,7 +1205,9 @@ fn branch_curve(c: &Connector, from: &Shape, to: &Shape) -> Option<Vec<(f32, f32
     if (ex - sx) * if right { 1.0 } else { -1.0 } < 4.0 {
         return None;
     }
-    let (sy, ey) = (from.center().1, to.center().1);
+    // a topic drawn as a line under its name is met at that line
+    let level = |s: &Shape| if s.underlined() { s.y + s.h } else { s.center().1 };
+    let (sy, ey) = (level(from), level(to));
     let k = (ex - sx) * 0.5;
     let n = 20;
     Some(
@@ -1683,10 +1717,12 @@ pub fn fold_knob(cam: &Cam, s: &Shape, g: crate::mindlayout::Grow) -> (Pos2, f32
     let r = cam.rect(s);
     let rad = (8.0 * cam.zoom).max(6.5);
     let gap = rad + 2.0 * cam.zoom;
+    // an underlined topic's knob sits on its line, where its branches leave
+    let y = if s.underlined() { r.bottom() } else { r.center().y };
     let c = match g {
-        Grow::Left => Pos2::new(r.left() - gap, r.center().y),
+        Grow::Left => Pos2::new(r.left() - gap, y),
         Grow::Down => Pos2::new(r.center().x, r.bottom() + gap),
-        _ => Pos2::new(r.right() + gap, r.center().y),
+        _ => Pos2::new(r.right() + gap, y),
     };
     (c, rad)
 }
@@ -1894,6 +1930,9 @@ pub fn draw_icon(painter: &Painter, rect: Rect, tool: Tool, look: &Look, opts: &
                 hide_operations: false,
             fold: None,
             branch_style: None,
+            topic_shape: None,
+            border_color: None,
+            border_style: None,
                 splits: Vec::new(),
                 act_spans: Vec::new(),
                 dividers: None,

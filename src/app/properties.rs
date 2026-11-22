@@ -391,6 +391,50 @@ impl UmlApp {
                 });
                 ui.end_row();
             }
+            if d.kind == DiagramKind::MindMap && s.kind.is_topic() {
+                // the topic's outline: shape, colour and line
+                use crate::model::{BORDER_STYLES, TOPIC_SHAPES};
+                let own = Shape::new(0, s.kind, 0.0, 0.0, 0.0, 0.0).topic_look();
+                let cur = s.topic_look();
+                ui.label(tr(lang, "Topic Shape"));
+                egui::ComboBox::from_id_salt("mind_topic_shape").selected_text(tr(lang, TOPIC_SHAPES.iter().find(|(v, _)| *v == cur).map(|(_, l)| *l).unwrap_or(""))).show_ui(ui, |ui| {
+                    for (v, l) in TOPIC_SHAPES {
+                        if ui.selectable_label(cur == v, tr(lang, l)).clicked() && cur != v {
+                            // the kind's own shape is kept as no choice, so a pasted topic follows its kind
+                            s.topic_shape = if v == own { None } else { Some(v) };
+                            field_changed = Some(19);
+                        }
+                    }
+                });
+                ui.end_row();
+                ui.label(tr(lang, "Border color"));
+                ui.horizontal(|ui| {
+                    let mut def = s.border_color.is_none();
+                    if ui.checkbox(&mut def, tr(lang, "Default")).changed() {
+                        s.border_color = if def { None } else { Some(self.look().line().to_array()) };
+                        field_changed = Some(20);
+                    }
+                    if let Some(f) = s.border_color {
+                        let mut c = Color32::from_rgba_unmultiplied(f[0], f[1], f[2], f[3]);
+                        if ui.color_edit_button_srgba(&mut c).changed() {
+                            s.border_color = Some(c.to_array());
+                            field_changed = Some(20);
+                        }
+                    }
+                });
+                ui.end_row();
+                let cur = s.border_style.unwrap_or(crate::model::BORDER_SOLID);
+                ui.label(tr(lang, "Border"));
+                egui::ComboBox::from_id_salt("mind_border_style").selected_text(tr(lang, BORDER_STYLES.iter().find(|(v, _)| *v == cur).map(|(_, l)| *l).unwrap_or(""))).show_ui(ui, |ui| {
+                    for (v, l) in BORDER_STYLES {
+                        if ui.selectable_label(cur == v, tr(lang, l)).clicked() && cur != v {
+                            s.border_style = if v == crate::model::BORDER_SOLID { None } else { Some(v) };
+                            field_changed = Some(21);
+                        }
+                    }
+                });
+                ui.end_row();
+            }
             if s.kind == ShapeKind::RequiredInterface {
                 let dirs = ["Right", "Down", "Left", "Up"];
                 ui.label(tr(lang, "Opening"));
