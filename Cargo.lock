@@ -1843,7 +1843,7 @@ dependencies = [
 
 [[package]]
 name = "napkin-uml"
-version = "0.3.2"
+version = "0.3.3-SNAPSHOT"
 dependencies = [
  "arboard",
  "eframe",
@@ -1855,6 +1855,7 @@ dependencies = [
  "serde_json",
  "sha2",
  "ureq",
+ "windows-sys 0.59.0",
  "winit",
 ]
 

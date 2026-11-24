@@ -16,6 +16,7 @@ mod ai;
 mod app;
 mod assoc;
 mod conn_create;
+mod emf;
 mod mindlayout;
 mod fonts;
 mod i18n;

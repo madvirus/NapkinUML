@@ -148,6 +148,42 @@ fn raw_input(size: Vec2, scale: f32) -> egui::RawInput {
 /// never more than `max_px` pixels on its longer side. Shapes are first grown to fit their text
 /// (as the canvas does when "Grow shapes to fit their text" is on).
 pub fn diagram_picture(d: &Diagram, opts: &ProjectOptions, look: &Look, fonts: &egui::FontDefinitions, scale: f32, max_px: f32) -> image::RgbImage {
+    let (ctx, d, bounds, mut textures) = prepare(d, opts, look, fonts);
+    let size = bounds.1 - bounds.0;
+    let scale = scale.min(max_px / size.x.max(size.y)).max(0.1);
+    // pass 3: paint, then fill the triangles in
+    let out = ctx.run(raw_input(size, scale), |ctx| {
+        let painter = ctx.layer_painter(egui::LayerId::background());
+        painter.rect_filled(Rect::from_min_size(Pos2::ZERO, size), 0.0, look.background());
+        let cam = Cam { origin: Pos2::ZERO, pan: -bounds.0.to_vec2(), zoom: 1.0 };
+        render::paint_diagram(&painter, &cam, &d, look, opts);
+    });
+    let ppp = out.pixels_per_point;
+    apply_textures(&mut textures, out.textures_delta);
+    let prims = ctx.tessellate(out.shapes, ppp);
+    let (w, h) = ((size.x * ppp).ceil().max(1.0) as usize, (size.y * ppp).ceil().max(1.0) as usize);
+    rasterize(&prims, &textures, ppp, w, h, look.background())
+}
+
+/// The diagram as an editable picture (EMF): the shapes egui would draw, with no background,
+/// 1 diagram unit = 1/96 inch (as the canvas at 100%). Shapes are first grown to fit their
+/// text, as in `diagram_picture`.
+pub fn diagram_emf(d: &Diagram, opts: &ProjectOptions, look: &Look, fonts: &egui::FontDefinitions) -> Vec<u8> {
+    let (ctx, d, bounds, _) = prepare(d, opts, look, fonts);
+    let size = bounds.1 - bounds.0;
+    let out = ctx.run(raw_input(size, 2.0), |ctx| {
+        let painter = ctx.layer_painter(egui::LayerId::background());
+        let cam = Cam { origin: Pos2::ZERO, pan: -bounds.0.to_vec2(), zoom: 1.0 };
+        render::paint_diagram(&painter, &cam, &d, look, opts);
+    });
+    let mut e = crate::emf::Emf::begin();
+    e.add_shapes(out.shapes.iter().map(|s| &s.shape));
+    e.finish(size)
+}
+
+/// Passes 1 and 2 of drawing a diagram off screen: a context whose fonts are ready, the diagram
+/// with its shapes grown to fit their text (and a mind map laid out), and its bounds.
+fn prepare(d: &Diagram, opts: &ProjectOptions, look: &Look, fonts: &egui::FontDefinitions) -> (egui::Context, Diagram, (Pos2, Pos2), HashMap<TextureId, Texture>) {
     let ctx = egui::Context::default();
     ctx.set_fonts(fonts.clone());
     let mut textures: HashMap<TextureId, Texture> = HashMap::new();
@@ -170,18 +206,5 @@ pub fn diagram_picture(d: &Diagram, opts: &ProjectOptions, look: &Look, fonts: &
         }
     });
     apply_textures(&mut textures, out.textures_delta);
-    let size = bounds.1 - bounds.0;
-    let scale = scale.min(max_px / size.x.max(size.y)).max(0.1);
-    // pass 3: paint, then fill the triangles in
-    let out = ctx.run(raw_input(size, scale), |ctx| {
-        let painter = ctx.layer_painter(egui::LayerId::background());
-        painter.rect_filled(Rect::from_min_size(Pos2::ZERO, size), 0.0, look.background());
-        let cam = Cam { origin: Pos2::ZERO, pan: -bounds.0.to_vec2(), zoom: 1.0 };
-        render::paint_diagram(&painter, &cam, &d, look, opts);
-    });
-    let ppp = out.pixels_per_point;
-    apply_textures(&mut textures, out.textures_delta);
-    let prims = ctx.tessellate(out.shapes, ppp);
-    let (w, h) = ((size.x * ppp).ceil().max(1.0) as usize, (size.y * ppp).ceil().max(1.0) as usize);
-    rasterize(&prims, &textures, ppp, w, h, look.background())
+    (ctx, d, bounds, textures)
 }

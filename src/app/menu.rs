@@ -17,6 +17,7 @@ pub(super) enum Act {
     ExportMany,
     Print,
     CopyImage,
+    CopyOffice,
     ProjectProperties,
     CloseProject,
     Exit,
@@ -201,6 +202,7 @@ impl UmlApp {
             a("Cut", Some(&sc(Modifiers::COMMAND, Key::X)), has_shapes, Act::Cut),
             a("Copy", Some(&sc(Modifiers::COMMAND, Key::C)), has_shapes, Act::Copy),
             a(if has_sel { "Copy Selection as Image" } else { "Copy Diagram as Image" }, Some(&SC_COPY_IMAGE), has_diagram, Act::CopyImage),
+            a(if has_sel { "Copy Selection as EMF" } else { "Copy Diagram as EMF" }, None, has_diagram && cfg!(windows), Act::CopyOffice),
             a("Paste", Some(&sc(Modifiers::COMMAND, Key::V)), self.clipboard.is_some() && has_diagram, Act::Paste),
             a("Duplicate", Some(&SC_DUPLICATE), has_shapes, Act::Duplicate),
             a("Delete", Some(&sc(Modifiers::NONE, Key::Delete)), has_sel, Act::Delete),
@@ -288,6 +290,7 @@ impl UmlApp {
                 self.copy_selection();
             }
             Act::CopyImage => self.copy_as_image(),
+            Act::CopyOffice => self.copy_for_office(None),
             Act::Paste => self.paste(),
             Act::Duplicate => self.duplicate(),
             Act::Delete => self.delete_selection(),

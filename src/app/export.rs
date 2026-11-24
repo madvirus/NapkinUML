@@ -719,7 +719,45 @@ impl UmlApp {
     /// Word and the like.
     pub(super) fn copy_as_image(&mut self) {
         let lang = self.settings.language;
-        let (Some(p), Some(d)) = (self.project.as_ref(), self.diag()) else { return };
+        let Some((sub, picked)) = self.copy_subject() else { return };
+        let Some(p) = self.project.as_ref() else { return };
+        let pic = crate::offscreen::diagram_picture(&sub, &p.options, &self.look(), self.fonts.defs(), 2.0, 6000.0);
+        let (w, h) = pic.dimensions();
+        let rgba: Vec<u8> = pic.pixels().flat_map(|px| [px[0], px[1], px[2], 255]).collect();
+        let result = arboard::Clipboard::new().and_then(|mut cb| cb.set_image(arboard::ImageData { width: w as usize, height: h as usize, bytes: std::borrow::Cow::Owned(rgba) }));
+        self.status = match result {
+            Ok(()) => format!("{} ({w} x {h})", tr(lang, if picked { "The selection was copied as an image" } else { "The diagram was copied as an image" })),
+            Err(e) => format!("{}: {e}", tr(lang, "Could not copy the image")),
+        };
+    }
+
+    /// The selection (or the whole diagram) put on the clipboard as an editable picture (EMF):
+    /// pasted into PowerPoint (or Word, Excel), it can be ungrouped into the program's own shapes,
+    /// lines and text boxes. `save_to` also writes the file (for checking).
+    pub(super) fn copy_for_office(&mut self, save_to: Option<&std::path::Path>) {
+        let lang = self.settings.language;
+        let Some((sub, picked)) = self.copy_subject() else { return };
+        let Some(p) = self.project.as_ref() else { return };
+        let bytes = crate::offscreen::diagram_emf(&sub, &p.options, &self.look(), self.fonts.defs());
+        if let Some(path) = save_to {
+            let _ = std::fs::write(path, &bytes);
+        }
+        self.status = match crate::emf::to_clipboard(&bytes) {
+            Ok(()) => format!(
+                "{} {}",
+                tr(lang, if picked { "The selection was copied as editable shapes." } else { "The diagram was copied as editable shapes." }),
+                tr(lang, "In PowerPoint, paste it, then Ungroup it (Ctrl+Shift+G) to edit each shape.")
+            ),
+            Err(e) => format!("{}: {e}", tr(lang, "Could not copy the shapes")),
+        };
+    }
+
+    /// What Copy as Image (and as EMF) copies: the selection (with what sits inside
+    /// selected containers, attached ports, joined interfaces and the lines among them), or the
+    /// whole diagram when nothing is selected; and whether it is a selection.
+    fn copy_subject(&mut self) -> Option<(Diagram, bool)> {
+        let lang = self.settings.language;
+        let d = self.diag()?;
         let mut sub = d.clone();
         let picked = !self.sel_shapes.is_empty() || !self.sel_conns.is_empty();
         if picked {
@@ -746,16 +784,9 @@ impl UmlApp {
         }
         if sub.shapes.is_empty() {
             self.status = tr(lang, "There is nothing to copy.").to_string();
-            return;
+            return None;
         }
-        let pic = crate::offscreen::diagram_picture(&sub, &p.options, &self.look(), self.fonts.defs(), 2.0, 6000.0);
-        let (w, h) = pic.dimensions();
-        let rgba: Vec<u8> = pic.pixels().flat_map(|px| [px[0], px[1], px[2], 255]).collect();
-        let result = arboard::Clipboard::new().and_then(|mut cb| cb.set_image(arboard::ImageData { width: w as usize, height: h as usize, bytes: std::borrow::Cow::Owned(rgba) }));
-        self.status = match result {
-            Ok(()) => format!("{} ({w} x {h})", tr(lang, if picked { "The selection was copied as an image" } else { "The diagram was copied as an image" })),
-            Err(e) => format!("{}: {e}", tr(lang, "Could not copy the image")),
-        };
+        Some((sub, picked))
     }
 
     pub(super) fn export_image(&mut self) {

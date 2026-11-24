@@ -149,6 +149,10 @@ impl UmlApp {
             if std::env::var("NAPKINUML_COPY_IMAGE").is_ok() {
                 self.copy_as_image();
             }
+            // for checking Copy as EMF: NAPKINUML_COPY_EMF=<file> copies and also saves the EMF
+            if let Ok(f) = std::env::var("NAPKINUML_COPY_EMF") {
+                self.copy_for_office(Some(std::path::Path::new(&f)));
+            }
             // for checking Split Activation: NAPKINUML_SPLIT_AT=<x>,<y> (diagram units) right-clicks there
             // and picks Split Activation (or Join Activations when on a split point)
             // for checking activation handles: NAPKINUML_BAR_EDGE=<x>,<y>[,top|bottom,<new y>] selects the

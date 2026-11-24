@@ -587,6 +587,9 @@ impl UmlApp {
         if self.menu_item(ui, if any_sel { "Copy Selection as Image" } else { "Copy Diagram as Image" }, Some(&SC_COPY_IMAGE), self.active.is_some()) {
             self.copy_as_image();
         }
+        if self.menu_item(ui, if any_sel { "Copy Selection as EMF" } else { "Copy Diagram as EMF" }, None, self.active.is_some() && cfg!(windows)) {
+            self.copy_for_office(None);
+        }
         if has_sel {
             ui.separator();
             if self.menu_item(ui, "Bring to Front", None, true) {
