@@ -24,6 +24,11 @@ pub const GAP_Y: f32 = 14.0;
 /// Org chart: room between a topic and the sub-topics below it, and between sibling sub-trees.
 pub const GAP_V: f32 = 40.0;
 pub const GAP_H: f32 = 20.0;
+/// Room between the central topic's main branches (each with all its sub-topics), wider than
+/// between other sibling sub-trees so each line of thought stands apart: above each other in a
+/// mind map or logic chart, side by side in an org chart.
+pub const MAIN_GAP_Y: f32 = 32.0;
+pub const MAIN_GAP_H: f32 = 44.0;
 /// A mind map's sides are evened out only when one holds more than this many topics more than
 /// the other (counting every level below the root), so adding a topic doesn't shuffle the map
 /// every time.
@@ -197,12 +202,13 @@ impl Tree {
         sum.max(w)
     }
 
-    /// Place `list` (children of the topic now at `at`) beside it, stacked and centred on it.
-    fn place_side(&self, at: R, list: &[u64], right: bool, out: &mut HashMap<u64, R>) {
+    /// Place `list` (children of the topic now at `at`) beside it, stacked and centred on it,
+    /// `gap` apart.
+    fn place_side(&self, at: R, list: &[u64], right: bool, gap: f32, out: &mut HashMap<u64, R>) {
         if list.is_empty() {
             return;
         }
-        let total: f32 = list.iter().map(|c| self.ext_v(*c)).sum::<f32>() + GAP_Y * (list.len() - 1) as f32;
+        let total: f32 = list.iter().map(|c| self.ext_v(*c)).sum::<f32>() + gap * (list.len() - 1) as f32;
         let mut y0 = at.cy() - total / 2.0;
         for &c in list {
             let e = self.ext_v(c);
@@ -211,26 +217,27 @@ impl Tree {
             let nr = R { x, y: y0 + e / 2.0 - r.h / 2.0, ..r };
             out.insert(c, nr);
             let next = self.sorted(self.kids(c), |r| r.cy());
-            self.place_side(nr, &next, right, out);
-            y0 += e + GAP_Y;
+            self.place_side(nr, &next, right, GAP_Y, out);
+            y0 += e + gap;
         }
     }
 
-    /// Place the children of the topic now at `at` below it, side by side and centred under it.
-    fn place_down(&self, id: u64, at: R, out: &mut HashMap<u64, R>) {
+    /// Place the children of the topic now at `at` below it, side by side and centred under it,
+    /// `gap` apart.
+    fn place_down(&self, id: u64, at: R, gap: f32, out: &mut HashMap<u64, R>) {
         let list = self.sorted(self.kids(id), |r| r.cx());
         if list.is_empty() {
             return;
         }
-        let total: f32 = list.iter().map(|c| self.ext_h(*c)).sum::<f32>() + GAP_H * (list.len() - 1) as f32;
+        let total: f32 = list.iter().map(|c| self.ext_h(*c)).sum::<f32>() + gap * (list.len() - 1) as f32;
         let mut x0 = at.cx() - total / 2.0;
         for c in list {
             let e = self.ext_h(c);
             let r = self.rect[&c];
             let nr = R { x: x0 + e / 2.0 - r.w / 2.0, y: at.y + at.h + GAP_V, ..r };
             out.insert(c, nr);
-            self.place_down(c, nr, out);
-            x0 += e + GAP_H;
+            self.place_down(c, nr, GAP_H, out);
+            x0 += e + gap;
         }
     }
 }
@@ -338,7 +345,7 @@ pub fn layout_keep(d: &mut Diagram, keep: Option<u64>) {
         let at = t.rect[&root];
         match t.structure[&root] {
             ORG_CHART => {
-                t.place_down(root, at, &mut out);
+                t.place_down(root, at, MAIN_GAP_H, &mut out);
                 let mut stack = vec![root];
                 while let Some(n) = stack.pop() {
                     org.insert(n);
@@ -347,7 +354,7 @@ pub fn layout_keep(d: &mut Diagram, keep: Option<u64>) {
             }
             LOGIC_CHART => {
                 let list = t.sorted(t.kids(root), |r| r.cy());
-                t.place_side(at, &list, true, &mut out);
+                t.place_side(at, &list, true, MAIN_GAP_Y, &mut out);
             }
             _ => {
                 let (mut right, mut left): (Vec<u64>, Vec<u64>) = t.kids(root).iter().partition(|c| t.rect[*c].cx() >= at.cx());
@@ -384,8 +391,8 @@ pub fn layout_keep(d: &mut Diagram, keep: Option<u64>) {
                         }
                     }
                 }
-                t.place_side(at, &right, true, &mut out);
-                t.place_side(at, &left, false, &mut out);
+                t.place_side(at, &right, true, MAIN_GAP_Y, &mut out);
+                t.place_side(at, &left, false, MAIN_GAP_Y, &mut out);
             }
         }
     }
