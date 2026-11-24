@@ -21,6 +21,9 @@ const CANDIDATES: &[(&str, &str)] = &[
     ("Comic Sans MS", "comic.ttf"),
 ];
 
+/// The font family marker symbols are drawn in (the system's emoji font first).
+pub const MARKER_FAMILY: &str = "marker-emoji";
+
 fn font_dir() -> PathBuf {
     let win = std::env::var_os("WINDIR").map(PathBuf::from).unwrap_or_else(|| PathBuf::from("C:\\Windows"));
     win.join("Fonts")
@@ -52,6 +55,21 @@ pub fn build(wanted: &[String]) -> (egui::FontDefinitions, Vec<String>) {
             break;
         }
     }
+    // marker symbols missing from egui's own emoji font come from the system's emoji font
+    // (drawn in one colour)
+    // (drawn in one colour); marker symbols prefer it, as its shapes are bolder
+    let emoji = [font_dir().join("seguiemj.ttf"), PathBuf::from("/usr/share/fonts/truetype/noto/NotoEmoji-Regular.ttf")];
+    let mut marker = vec![];
+    for c in emoji {
+        if let Ok(bytes) = std::fs::read(&c) {
+            fonts.font_data.insert("emoji-system".to_owned(), Arc::new(egui::FontData::from_owned(bytes)));
+            fonts.families.entry(egui::FontFamily::Proportional).or_default().push("emoji-system".to_owned());
+            marker.push("emoji-system".to_owned());
+            break;
+        }
+    }
+    marker.extend(fonts.families.get(&egui::FontFamily::Proportional).cloned().unwrap_or_default().into_iter().filter(|k| k != "emoji-system"));
+    fonts.families.insert(egui::FontFamily::Name(MARKER_FAMILY.into()), marker);
     let base = fonts.families.get(&egui::FontFamily::Proportional).cloned().unwrap_or_default();
     let mut loaded = vec![];
     for name in wanted {

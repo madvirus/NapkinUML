@@ -408,7 +408,9 @@ impl Emf {
                 }
                 let Some(cref) = colorref(color) else { continue };
                 let cjk = run.iter().any(|g| matches!(g.chr as u32, 0x1100..=0x11FF | 0x2E80..=0x9FFF | 0xAC00..=0xD7AF | 0xF900..=0xFAFF | 0xFF00..=0xFFEF));
+                let emoji = run.iter().any(|g| matches!(g.chr as u32, 0x2600..=0x27BF | 0x1F000..=0x1FAFF));
                 let face = match &fmt.font_id.family {
+                    _ if emoji => "Segoe UI Emoji".to_string(),
                     egui::FontFamily::Name(n) => n.to_string(),
                     egui::FontFamily::Monospace => self.monospace_face.clone(),
                     egui::FontFamily::Proportional if cjk => self.cjk_face.clone(),

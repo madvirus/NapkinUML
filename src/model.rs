@@ -65,7 +65,7 @@ impl DiagramKind {
             DiagramKind::Package => "Shows packages and the dependencies, imports and merges between them.",
             DiagramKind::Erd => "Shows database tables, their columns and the relationships between them.",
             DiagramKind::Network => "Shows network devices (routers, switches, firewalls, servers, PCs, phones...), the network zones they sit in and how they are connected.",
-            DiagramKind::MindMap => "Shows one central topic with the ideas that branch out of it, and their sub-ideas. Select a topic and press Tab to add a sub-topic, Enter to add a sibling topic (or click Add Sub-topic / Add Topic at the bottom of the palette, or in the topic's right-click menu). The central topic picks the structure (mind map, logic chart or org chart); topics are placed automatically, and a dragged topic joins the topic it is dropped next to. The small circle beside a topic (or Ctrl+/) folds and unfolds its sub-topics. While typing a topic's name, Shift+Enter starts a new line. A topic's shape (capsule, rounded box or underline), border colour and border line (solid, dashed or none) are set in its properties.",
+            DiagramKind::MindMap => "Shows one central topic with the ideas that branch out of it, and their sub-ideas. Right-click a topic (or use the Properties pane) to put markers on it: a colour tag, a priority, task progress and symbols. Select a topic and press Tab to add a sub-topic, Enter to add a sibling topic (or click Add Sub-topic / Add Topic at the bottom of the palette, or in the topic's right-click menu). The central topic picks the structure (mind map, logic chart or org chart); topics are placed automatically, and a dragged topic joins the topic it is dropped next to. The small circle beside a topic (or Ctrl+/) folds and unfolds its sub-topics. While typing a topic's name, Shift+Enter starts a new line. A topic's shape (capsule, rounded box or underline), border colour and border line (solid, dashed or none) are set in its properties.",
         }
     }
 }
@@ -551,6 +551,101 @@ pub struct Shape {
     /// A mind map topic's outline: `BORDER_SOLID` (None), `BORDER_DASHED` or `BORDER_NONE`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub border_style: Option<u8>,
+    /// A mind map topic's markers (ids from `MARKERS`), shown in front of its name in the
+    /// table's order.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub markers: Vec<String>,
+}
+
+/// How a marker is drawn.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum MarkerLook {
+    /// A coloured dot.
+    Tag([u8; 3]),
+    /// A number on a coloured dot.
+    Priority(u8, [u8; 3]),
+    /// A ring filled clockwise from the top in eighths (8 = done: a full dot with a tick).
+    Progress(u8),
+    /// An emoji drawn in one colour.
+    Symbol(&'static str, [u8; 3]),
+}
+
+/// One marker a mind map topic can carry.
+pub struct MarkerDef {
+    pub id: &'static str,
+    /// Index into `MARKER_GROUPS`.
+    pub group: u8,
+    pub label: &'static str,
+    pub look: MarkerLook,
+}
+
+/// Marker groups. A topic carries at most one marker of each group but the last (symbols).
+pub const MARKER_GROUPS: [&str; 4] = ["Tag", "Priority", "Task progress", "Symbols"];
+
+const fn mk(id: &'static str, group: u8, label: &'static str, look: MarkerLook) -> MarkerDef {
+    MarkerDef { id, group, label, look }
+}
+
+pub const MARKERS: &[MarkerDef] = &[
+    mk("tag-red", 0, "Red", MarkerLook::Tag([0xE5, 0x39, 0x35])),
+    mk("tag-orange", 0, "Orange", MarkerLook::Tag([0xFB, 0x8C, 0x00])),
+    mk("tag-yellow", 0, "Yellow", MarkerLook::Tag([0xFD, 0xD8, 0x35])),
+    mk("tag-green", 0, "Green", MarkerLook::Tag([0x43, 0xA0, 0x47])),
+    mk("tag-blue", 0, "Blue", MarkerLook::Tag([0x1E, 0x88, 0xE5])),
+    mk("tag-purple", 0, "Purple", MarkerLook::Tag([0x8E, 0x24, 0xAA])),
+    mk("tag-brown", 0, "Brown", MarkerLook::Tag([0x79, 0x55, 0x48])),
+    mk("tag-black", 0, "Black", MarkerLook::Tag([0x21, 0x21, 0x21])),
+    mk("tag-white", 0, "White", MarkerLook::Tag([0xFF, 0xFF, 0xFF])),
+    mk("priority-1", 1, "Priority 1", MarkerLook::Priority(1, [0xE5, 0x39, 0x35])),
+    mk("priority-2", 1, "Priority 2", MarkerLook::Priority(2, [0xFB, 0x8C, 0x00])),
+    mk("priority-3", 1, "Priority 3", MarkerLook::Priority(3, [0xFD, 0xD8, 0x35])),
+    mk("priority-4", 1, "Priority 4", MarkerLook::Priority(4, [0x43, 0xA0, 0x47])),
+    mk("priority-5", 1, "Priority 5", MarkerLook::Priority(5, [0x1E, 0x88, 0xE5])),
+    mk("task-0", 2, "Not started", MarkerLook::Progress(0)),
+    mk("task-1", 2, "1/8 done", MarkerLook::Progress(1)),
+    mk("task-2", 2, "2/8 done", MarkerLook::Progress(2)),
+    mk("task-3", 2, "3/8 done", MarkerLook::Progress(3)),
+    mk("task-4", 2, "4/8 done", MarkerLook::Progress(4)),
+    mk("task-5", 2, "5/8 done", MarkerLook::Progress(5)),
+    mk("task-6", 2, "6/8 done", MarkerLook::Progress(6)),
+    mk("task-7", 2, "7/8 done", MarkerLook::Progress(7)),
+    mk("task-done", 2, "Done", MarkerLook::Progress(8)),
+    mk("like", 3, "Like", MarkerLook::Symbol("\u{1F44D}", [0xF9, 0xA8, 0x25])),
+    mk("dislike", 3, "Dislike", MarkerLook::Symbol("\u{1F44E}", [0x6D, 0x4C, 0x41])),
+    mk("idea", 3, "Idea", MarkerLook::Symbol("\u{1F4A1}", [0xF5, 0xB4, 0x00])),
+    mk("lightning", 3, "Lightning", MarkerLook::Symbol("\u{26A1}", [0xFF, 0xA0, 0x00])),
+    mk("phone", 3, "Phone", MarkerLook::Symbol("\u{1F4DE}", [0xE5, 0x39, 0x35])),
+    mk("pencil", 3, "Pencil", MarkerLook::Symbol("\u{270F}", [0xFB, 0x8C, 0x00])),
+    mk("exclamation", 3, "Exclamation mark", MarkerLook::Symbol("\u{2757}", [0xE5, 0x39, 0x35])),
+    mk("question", 3, "Question mark", MarkerLook::Symbol("\u{2753}", [0x1E, 0x88, 0xE5])),
+    mk("airplane", 3, "Airplane", MarkerLook::Symbol("\u{2708}", [0x1E, 0x88, 0xE5])),
+    mk("train", 3, "Train", MarkerLook::Symbol("\u{1F686}", [0x00, 0x89, 0x7B])),
+    mk("car", 3, "Car", MarkerLook::Symbol("\u{1F697}", [0xE5, 0x39, 0x35])),
+    mk("bicycle", 3, "Bicycle", MarkerLook::Symbol("\u{1F6B2}", [0x3F, 0x51, 0xB5])),
+    mk("exit", 3, "Emergency exit", MarkerLook::Symbol("\u{1F3C3}", [0x2E, 0x7D, 0x32])),
+    mk("fire", 3, "Fire", MarkerLook::Symbol("\u{1F525}", [0xF4, 0x51, 0x1E])),
+    mk("extinguisher", 3, "Fire extinguisher", MarkerLook::Symbol("\u{1F9EF}", [0xD3, 0x2F, 0x2F])),
+    mk("music", 3, "Music note", MarkerLook::Symbol("\u{1F3B5}", [0x5E, 0x35, 0xB1])),
+    mk("heart", 3, "Heart", MarkerLook::Symbol("\u{2764}", [0xE5, 0x39, 0x35])),
+    mk("hundred", 3, "100 points", MarkerLook::Symbol("\u{1F4AF}", [0xD3, 0x2F, 0x2F])),
+    mk("looking", 3, "Looking into it", MarkerLook::Symbol("\u{1F440}", [0x45, 0x5A, 0x64])),
+];
+
+/// The marker with this id (None for an id this version doesn't know).
+pub fn marker_def(id: &str) -> Option<&'static MarkerDef> {
+    MARKERS.iter().find(|m| m.id == id)
+}
+
+/// Put marker `id` on (`on`) or off a topic's list. Putting one on replaces another of its
+/// group (but symbols stack); the list stays in the table's order.
+pub fn set_marker(list: &mut Vec<String>, id: &str, on: bool) {
+    let Some(def) = marker_def(id) else { return };
+    list.retain(|m| m != id && !(def.group + 1 < MARKER_GROUPS.len() as u8 && marker_def(m).map(|d| d.group) == Some(def.group)));
+    if on {
+        list.push(id.to_string());
+    }
+    let pos = |m: &String| MARKERS.iter().position(|d| d.id == m).unwrap_or(usize::MAX);
+    list.sort_by_key(pos);
 }
 
 /// Mind map topic outlines (`Shape::topic_shape`): the central topic's capsule, a topic's
@@ -709,6 +804,7 @@ impl Shape {
             topic_shape: None,
             border_color: None,
             border_style: None,
+            markers: Vec::new(),
             splits: Vec::new(),
             act_spans: Vec::new(),
             dividers: None,
@@ -1643,6 +1739,21 @@ pub fn shift_lane_contents(dm: &mut Diagram, lane: &Shape, from: f32, delta: f32
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn one_marker_per_group_but_symbols_stack() {
+        let mut m = vec![];
+        set_marker(&mut m, "heart", true);
+        set_marker(&mut m, "tag-red", true);
+        set_marker(&mut m, "idea", true);
+        set_marker(&mut m, "tag-blue", true);
+        set_marker(&mut m, "task-3", true);
+        set_marker(&mut m, "task-done", true);
+        assert_eq!(m, ["tag-blue", "task-done", "idea", "heart"]);
+        set_marker(&mut m, "idea", false);
+        assert_eq!(m, ["tag-blue", "task-done", "heart"]);
+        assert!(MARKERS.iter().all(|d| (d.group as usize) < MARKER_GROUPS.len()));
+    }
 
     fn diagram(kind: DiagramKind, shapes: Vec<Shape>) -> Diagram {
         let mut p = Project::new("t");

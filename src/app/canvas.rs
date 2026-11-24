@@ -500,6 +500,38 @@ impl UmlApp {
             }
             ui.separator();
         }
+        // mind map topics: put markers on them
+        let marked: Option<Vec<String>> = self.diag().and_then(|d| {
+            let first = self.sel_shapes.iter().filter_map(|id| d.shape(*id)).find(|s| s.kind.is_topic())?;
+            Some(first.markers.clone())
+        });
+        if let Some(cur) = marked {
+            let lang = self.settings.language;
+            let mut pick = None;
+            ui.menu_button(tr(lang, "Markers"), |ui| {
+                ui.set_max_width(6.0 * 26.0);
+                if let Some(p) = super::properties::marker_picker(ui, lang, &cur, "menu") {
+                    pick = Some(p);
+                    ui.close_menu();
+                }
+                if !cur.is_empty() {
+                    ui.separator();
+                    if ui.button(tr(lang, "Remove All Markers")).clicked() {
+                        pick = Some(("", false));
+                        ui.close_menu();
+                    }
+                }
+            });
+            if let Some((id, on)) = pick {
+                let ctx = ui.ctx().clone();
+                if id.is_empty() {
+                    self.clear_markers_on_selection(&ctx);
+                } else {
+                    self.set_marker_on_selection(&ctx, id, on);
+                }
+            }
+            ui.separator();
+        }
         // a mind map topic: fold or unfold its sub-topics
         let fold_target = if self.sel_shapes.len() == 1 && self.sel_conns.is_empty() {
             let id = self.sel_shapes[0];

@@ -449,6 +449,19 @@ impl UmlApp {
                 ui.end_row();
             }
         });
+        if s.kind.is_topic() {
+            ui.add_space(6.0);
+            ui.label(tr(lang, "Markers"));
+            if let Some((id, on)) = marker_picker(ui, lang, &s.markers, "prop") {
+                let opts = self.project.as_ref().map(|p| p.options.clone()).unwrap_or_default();
+                let before = render::min_size(ui.ctx(), &s, &opts, &self.look()).x;
+                crate::model::set_marker(&mut s.markers, id, on);
+                // the topic grows or shrinks by the markers' width (keeping any room the user gave it)
+                let after = render::min_size(ui.ctx(), &s, &opts, &self.look()).x;
+                s.w = (s.w + after - before).max(after);
+                field_changed = Some(22);
+            }
+        }
         if !matches!(s.kind, ShapeKind::Initial | ShapeKind::Final | ShapeKind::ActivityFinal | ShapeKind::Junction | ShapeKind::Fork | ShapeKind::Join) {
             ui.add_space(4.0);
             ui.weak(tr(lang, "Pastel colors"));
@@ -586,6 +599,46 @@ impl UmlApp {
                     *t = s;
                 }
             }
+        }
+    }
+
+    /// Put marker `id` on (`on`) or off the selected topics, as one undo step.
+    pub(super) fn set_marker_on_selection(&mut self, ctx: &egui::Context, id: &str, on: bool) {
+        let ids: Vec<u64> = self.sel_shapes.clone();
+        let opts = self.project.as_ref().map(|p| p.options.clone()).unwrap_or_default();
+        let look = self.look();
+        self.commit_edit();
+        self.checkpoint();
+        if let Some(d) = self.diag_mut() {
+            for s in d.shapes.iter_mut().filter(|s| ids.contains(&s.id) && s.kind.is_topic()) {
+                let before = render::min_size(ctx, s, &opts, &look).x;
+                crate::model::set_marker(&mut s.markers, id, on);
+                let after = render::min_size(ctx, s, &opts, &look).x;
+                s.w = (s.w + after - before).max(after);
+            }
+        }
+        if let Some(d) = self.diag_mut() {
+            crate::mindlayout::layout(d);
+        }
+    }
+
+    /// Take every marker off the selected topics, as one undo step.
+    pub(super) fn clear_markers_on_selection(&mut self, ctx: &egui::Context) {
+        let ids: Vec<u64> = self.sel_shapes.clone();
+        let opts = self.project.as_ref().map(|p| p.options.clone()).unwrap_or_default();
+        let look = self.look();
+        self.commit_edit();
+        self.checkpoint();
+        if let Some(d) = self.diag_mut() {
+            for s in d.shapes.iter_mut().filter(|s| ids.contains(&s.id) && s.kind.is_topic()) {
+                let before = render::min_size(ctx, s, &opts, &look).x;
+                s.markers.clear();
+                let after = render::min_size(ctx, s, &opts, &look).x;
+                s.w = (s.w + after - before).max(after);
+            }
+        }
+        if let Some(d) = self.diag_mut() {
+            crate::mindlayout::layout(d);
         }
     }
 
@@ -848,4 +901,34 @@ impl UmlApp {
         let resp = resp.on_hover_text(tip);
         enabled && resp.clicked()
     }
+}
+
+/// The markers a topic can carry, by group, as buttons. Returns the marker clicked and whether it
+/// is now on (clicking a marker the topic has takes it off).
+pub(super) fn marker_picker(ui: &mut egui::Ui, lang: Language, current: &[String], salt: &str) -> Option<(&'static str, bool)> {
+    use crate::model::{MARKERS, MARKER_GROUPS};
+    let mut out = None;
+    for (g, name) in MARKER_GROUPS.iter().enumerate() {
+        ui.weak(tr(lang, name));
+        ui.horizontal_wrapped(|ui| {
+            ui.spacing_mut().item_spacing = Vec2::new(2.0, 2.0);
+            for d in MARKERS.iter().filter(|d| d.group as usize == g) {
+                let on = current.iter().any(|m| m == d.id);
+                let (rect, resp) = ui.allocate_exact_size(Vec2::splat(24.0), Sense::click());
+                let resp = resp.on_hover_text(tr(lang, d.label));
+                if on {
+                    ui.painter().rect(rect, 4.0, ui.visuals().selection.bg_fill.gamma_multiply(0.35), egui::Stroke::new(1.0_f32, ui.visuals().selection.bg_fill), egui::StrokeKind::Inside);
+                } else if resp.hovered() {
+                    ui.painter().rect_filled(rect, 4.0, ui.visuals().widgets.hovered.weak_bg_fill);
+                }
+                render::draw_marker(ui.painter(), d, rect.center(), 16.0);
+                resp.widget_info(|| egui::WidgetInfo::selected(egui::WidgetType::Checkbox, true, on, tr(lang, d.label)));
+                if resp.clicked() {
+                    out = Some((d.id, !on));
+                }
+            }
+        });
+        let _ = salt;
+    }
+    out
 }

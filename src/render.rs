@@ -250,7 +250,11 @@ pub fn min_size(ctx: &egui::Context, shape: &Shape, opts: &ProjectOptions, look:
             let lines: Vec<&str> = shape.name.split('\n').collect();
             let w = lines.iter().map(|l| text_width(ctx, l, ts * k)).fold(0.0, f32::max);
             let (pad_w, pad_h) = if shape.kind == CentralTopic { (40.0, 18.0) } else { (24.0, 12.0) };
-            Vec2::new(w + pad_w, lines.len().max(1) as f32 * lh * k + pad_h)
+            // markers in front of the name
+            let n = shape.markers.iter().filter(|m| crate::model::marker_def(m).is_some()).count();
+            let mw = markers_width(n, ts * k, !shape.name.is_empty());
+            let mh = if n > 0 { ts * k * MARKER_K } else { 0.0 };
+            Vec2::new(w + mw + pad_w, (lines.len().max(1) as f32 * lh * k).max(mh) + pad_h)
         }
         _ => Vec2::new(8.0, 8.0),
     }
@@ -572,6 +576,99 @@ fn topic_outline(painter: &Painter, pts: &[Pos2], stroke: Stroke, style: u8, zoo
     }
 }
 
+/// A marker's size against the name's font size, the space between two markers and between
+/// the last marker and the name (both against the marker's size).
+pub const MARKER_K: f32 = 1.55;
+const MARKER_GAP: f32 = 0.12;
+const MARKER_TEXT_GAP: f32 = 0.3;
+
+/// How wide `n` markers are in front of a name in a font of `size` (with the gap to the name).
+pub fn markers_width(n: usize, size: f32, text: bool) -> f32 {
+    if n == 0 {
+        return 0.0;
+    }
+    let m = size * MARKER_K;
+    let n = n as f32;
+    n * m + (n - 1.0) * m * MARKER_GAP + if text { m * MARKER_TEXT_GAP } else { 0.0 }
+}
+
+/// A topic's markers, in front of its name (the markers and the name centred together in `r`).
+/// Returns the rect left for the name.
+fn topic_markers(painter: &Painter, look: &Look, r: Rect, shape: &Shape, font: &FontId) -> Rect {
+    let defs: Vec<&crate::model::MarkerDef> = shape.markers.iter().filter_map(|m| crate::model::marker_def(m)).collect();
+    if look.icon || defs.is_empty() {
+        return r;
+    }
+    let text = !shape.name.is_empty();
+    let m = font.size * MARKER_K;
+    let mw = markers_width(defs.len(), font.size, text);
+    let widest = if text { shape.name.split('\n').map(|l| painter.layout_no_wrap(l.to_string(), font.clone(), Color32::WHITE).size().x).fold(0.0, f32::max) } else { 0.0 };
+    let widest = widest.min((r.width() - mw - 8.0).max(0.0));
+    let x0 = r.center().x + mw / 2.0 - widest / 2.0 - mw;
+    for (i, d) in defs.iter().enumerate() {
+        let c = Pos2::new(x0 + m / 2.0 + i as f32 * m * (1.0 + MARKER_GAP), r.center().y);
+        draw_marker(painter, d, c, m);
+    }
+    Rect::from_min_max(Pos2::new(r.left() + mw, r.top()), r.max)
+}
+
+/// One marker of size `m` centred on `c` (also the palette and menu buttons).
+pub fn draw_marker(painter: &Painter, def: &crate::model::MarkerDef, c: Pos2, m: f32) {
+    use crate::model::MarkerLook;
+    let rgb = |v: [u8; 3]| Color32::from_rgb(v[0], v[1], v[2]);
+    let rad = m * 0.42;
+    let edge = (m * 0.07).max(0.6);
+    match def.look {
+        MarkerLook::Tag(v) => {
+            let col = rgb(v);
+            let rim = if v == [0xFF, 0xFF, 0xFF] { Color32::from_gray(150) } else { col.gamma_multiply(0.75).to_opaque() };
+            painter.circle(c, rad, col, Stroke::new(edge, rim));
+        }
+        MarkerLook::Priority(n, v) => {
+            let col = rgb(v);
+            painter.circle(c, rad, col, Stroke::new(edge, col.gamma_multiply(0.8).to_opaque()));
+            let tc = if n == 3 { Color32::from_rgb(0x4E, 0x34, 0x2E) } else { Color32::WHITE };
+            painter.text(c + Vec2::new(0.0, m * 0.03), Align2::CENTER_CENTER, n.to_string(), FontId::proportional(m * 0.66), tc);
+        }
+        MarkerLook::Progress(k) => {
+            let green = Color32::from_rgb(0x43, 0xA0, 0x47);
+            if k >= 8 {
+                painter.circle_filled(c, rad, green);
+                let s = Stroke::new((m * 0.11).max(1.0), Color32::WHITE);
+                let p = |x: f32, y: f32| c + Vec2::new(x, y) * rad;
+                painter.add(epaint::Shape::line(vec![p(-0.5, 0.0), p(-0.12, 0.4), p(0.55, -0.38)], s));
+                return;
+            }
+            painter.circle_filled(c, rad, Color32::WHITE);
+            // the done part: up to half a turn per piece, so each piece is convex (the second
+            // starts a little early to hide the seam)
+            let pie = |from: f32, to: f32| {
+                let steps = (((to - from) / 0.2).ceil() as usize).max(2);
+                let mut pts = vec![c];
+                for i in 0..=steps {
+                    let a = from + (to - from) * i as f32 / steps as f32 - std::f32::consts::FRAC_PI_2;
+                    pts.push(c + Vec2::new(a.cos(), a.sin()) * rad);
+                }
+                painter.add(epaint::Shape::convex_polygon(pts, green, Stroke::NONE));
+            };
+            let turn = std::f32::consts::TAU * k as f32 / 8.0;
+            if k > 0 {
+                pie(0.0, turn.min(std::f32::consts::PI));
+            }
+            if k > 4 {
+                pie(std::f32::consts::PI - 0.15, turn);
+            }
+            painter.circle_stroke(c, rad, Stroke::new((m * 0.09).max(0.8), green));
+        }
+        MarkerLook::Symbol(e, v) => {
+            // the system's emoji shapes when the fonts are loaded (egui's own before that)
+            let fam = egui::FontFamily::Name(crate::fonts::MARKER_FAMILY.into());
+            let fam = if painter.ctx().fonts(|f| f.families().contains(&fam)) { fam } else { egui::FontFamily::Proportional };
+            painter.text(c, Align2::CENTER_CENTER, e, FontId::new(m * 0.95, fam), rgb(v));
+        }
+    }
+}
+
 /// A topic's name: each line (the name's own line breaks) centred, the block centred in `r`;
 /// a line too long for the box wraps.
 fn centered_lines(painter: &Painter, look: &Look, r: Rect, text: &str, font: FontId, color: Color32) {
@@ -870,6 +967,7 @@ pub fn draw_shape(painter: &Painter, cam: &Cam, shape: &Shape, look: &Look, opts
                 }
             }
             let (tr, tf) = if central { (r.shrink2(Vec2::new(r.height().min(64.0 * z) * 0.3, 0.0)), font(look, cam, 1.2)) } else { (r, f.clone()) };
+            let tr = topic_markers(painter, look, tr, shape, &tf);
             centered_lines(painter, look, tr, &shape.name, tf, tc);
         }
         NetworkZone => {
@@ -1933,6 +2031,7 @@ pub fn draw_icon(painter: &Painter, rect: Rect, tool: Tool, look: &Look, opts: &
             topic_shape: None,
             border_color: None,
             border_style: None,
+            markers: Vec::new(),
                 splits: Vec::new(),
                 act_spans: Vec::new(),
                 dividers: None,
