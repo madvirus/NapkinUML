@@ -75,14 +75,22 @@ jobs:
       GH_TOKEN: ${{ github.token }}
       GH_REPO: ${{ github.repository }}
     steps:
+      - uses: actions/checkout@v7
       - name: Download build artifacts
         run: gh run download "${{ github.run_id }}" --dir artifacts
+      # Release notes come from release-notes/<tag>.md (e.g. release-notes/v0.3.3.md).
       - name: Create or update release
         run: |
           tag="${GITHUB_REF_NAME}"
+          notes="release-notes/${tag}.md"
+          if [ ! -f "$notes" ]; then
+            echo "::warning::Release notes file not found: $notes"
+            notes=/dev/null
+          fi
           files=$(find artifacts -type f)
           if gh release view "$tag" >/dev/null 2>&1; then
             gh release upload "$tag" $files --clobber
+            gh release edit "$tag" --notes-file "$notes"
           else
-            gh release create "$tag" $files --title "NapkinUML $tag" --notes ""
+            gh release create "$tag" $files --title "NapkinUML $tag" --notes-file "$notes"
           fi
