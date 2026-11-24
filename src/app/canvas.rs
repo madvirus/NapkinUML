@@ -488,6 +488,18 @@ impl UmlApp {
                 ui.separator();
             }
         }
+        // a mind map topic: add a sub-topic or a topic beside it (as Tab and Enter)
+        if self.mind_selected().is_some() && !self.sel_shapes.is_empty() {
+            if ui.add(egui::Button::new(self.t("Add Sub-topic")).shortcut_text("Tab")).clicked() {
+                ui.close_menu();
+                self.mind_add_clicked(true);
+            }
+            if ui.add(egui::Button::new(self.t("Add Topic")).shortcut_text("Enter")).clicked() {
+                ui.close_menu();
+                self.mind_add_clicked(false);
+            }
+            ui.separator();
+        }
         // a mind map topic: fold or unfold its sub-topics
         let fold_target = if self.sel_shapes.len() == 1 && self.sel_conns.is_empty() {
             let id = self.sel_shapes[0];

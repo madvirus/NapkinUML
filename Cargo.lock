@@ -1843,7 +1843,7 @@ dependencies = [
 
 [[package]]
 name = "napkin-uml"
-version = "0.3.3"
+version = "0.3.4-SNAPSHOT"
 dependencies = [
  "arboard",
  "eframe",

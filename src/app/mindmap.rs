@@ -28,6 +28,34 @@ impl UmlApp {
         d.shape(self.sel_shapes[0]).filter(|s| s.kind.is_topic()).map(|s| s.id)
     }
 
+    /// The one selected mind map topic (or the topic whose name is being typed): what the
+    /// palette's and the right-click menu's Add Sub-topic and Add Topic work on.
+    pub(super) fn mind_selected(&self) -> Option<u64> {
+        let d = self.diag()?;
+        if d.kind != DiagramKind::MindMap {
+            return None;
+        }
+        if let Some(ed) = &self.editing {
+            if let (EditTarget::Shape(id), None, None, None) = (ed.target, ed.line, ed.part, ed.guard) {
+                return d.shape(id).filter(|s| s.kind.is_topic()).map(|s| s.id);
+            }
+        }
+        if self.sel_shapes.len() != 1 || !self.sel_conns.is_empty() {
+            return None;
+        }
+        d.shape(self.sel_shapes[0]).filter(|s| s.kind.is_topic()).map(|s| s.id)
+    }
+
+    /// Add Sub-topic (`child`) or Add Topic, clicked in the palette or the right-click menu: as
+    /// Tab or Enter on the selected topic (a name being typed is kept first).
+    pub(super) fn mind_add_clicked(&mut self, child: bool) {
+        let Some(id) = self.mind_selected() else { return };
+        if self.editing.is_some() {
+            self.commit_edit();
+        }
+        self.mind_add(id, child);
+    }
+
     /// Called before egui reads the input: egui would move the keyboard focus with Tab, so a
     /// Tab meant for a mind map topic is taken out here and handled in `shortcuts`.
     pub(super) fn mind_tab(&mut self, ctx: &egui::Context, raw: &mut egui::RawInput) {

@@ -792,6 +792,60 @@ impl UmlApp {
                 }
                 self.palette_row(ui, e.tool, e.label, e.tip, &look, &opts);
             }
+            if kind == DiagramKind::MindMap {
+                // adding to the selected topic without the keyboard (the same as Tab and Enter)
+                ui.separator();
+                let on = self.mind_selected().is_some();
+                let (sub, sib) = (self.t("Add Sub-topic").to_string(), self.t("Add Topic").to_string());
+                if self.palette_action(ui, true, &sub, "Tab", on, &look) {
+                    self.mind_add_clicked(true);
+                }
+                if self.palette_action(ui, false, &sib, "Enter", on, &look) {
+                    self.mind_add_clicked(false);
+                }
+            }
         });
+    }
+
+    /// A palette row that does something at once instead of picking a tool: a mind map's Add
+    /// Sub-topic (`child`) or Add Topic. Greyed out (with a hint) while no topic is selected.
+    fn palette_action(&mut self, ui: &mut egui::Ui, child: bool, label: &str, key: &str, enabled: bool, look: &Look) -> bool {
+        let labels = self.settings.palette_labels;
+        let w = ui.available_width();
+        let (rect, resp) = ui.allocate_exact_size(Vec2::new(w, 24.0), if enabled { Sense::click() } else { Sense::hover() });
+        if enabled && resp.hovered() {
+            ui.painter().rect_filled(rect, 3.0, ui.visuals().widgets.hovered.weak_bg_fill);
+        }
+        let k: f32 = if enabled { 1.0 } else { 0.35 };
+        let line = look.line().gamma_multiply(k);
+        let fill = look.fill(ShapeKind::Topic).gamma_multiply(k);
+        let p = ui.painter();
+        let icon = Rect::from_min_size(rect.min + Vec2::new(4.0, 3.0), Vec2::splat(18.0));
+        let stroke = egui::Stroke::new(1.0_f32, line);
+        // the selected topic, and the new one (filled with the accent colour, a plus inside)
+        // beside it (a sub-topic) or under it (a topic next to it)
+        let (topic, new) = if child {
+            (Rect::from_min_max(icon.min + Vec2::new(0.0, 5.0), icon.min + Vec2::new(6.0, 13.0)), Rect::from_min_max(icon.min + Vec2::new(9.0, 4.0), icon.min + Vec2::new(18.0, 14.0)))
+        } else {
+            (Rect::from_min_max(icon.min + Vec2::new(1.0, 0.0), icon.min + Vec2::new(14.0, 6.0)), Rect::from_min_max(icon.min + Vec2::new(4.0, 8.0), icon.min + Vec2::new(17.0, 18.0)))
+        };
+        p.rect(topic, 1.5, fill, stroke, egui::StrokeKind::Middle);
+        if child {
+            p.line_segment([Pos2::new(topic.right(), topic.center().y), Pos2::new(new.left(), new.center().y)], stroke);
+        }
+        let accent = ui.visuals().selection.bg_fill.gamma_multiply(k);
+        p.rect(new, 2.0, accent, egui::Stroke::NONE, egui::StrokeKind::Middle);
+        let ps = egui::Stroke::new(1.6_f32, egui::Color32::WHITE.gamma_multiply(k.max(0.6)));
+        let c = new.center();
+        p.line_segment([c - Vec2::new(3.0, 0.0), c + Vec2::new(3.0, 0.0)], ps);
+        p.line_segment([c - Vec2::new(0.0, 3.0), c + Vec2::new(0.0, 3.0)], ps);
+        if labels {
+            let color = if enabled { ui.visuals().text_color() } else { ui.visuals().weak_text_color() };
+            p.text(Pos2::new(icon.right() + 6.0, rect.center().y), Align2::LEFT_CENTER, label, egui::FontId::proportional(12.0), color);
+        }
+        resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, enabled, label));
+        let tip = if enabled { format!("{label} ({key})") } else { format!("{label} ({key})\n{}", self.t("Select a topic first.")) };
+        let resp = resp.on_hover_text(tip);
+        enabled && resp.clicked()
     }
 }
