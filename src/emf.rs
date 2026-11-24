@@ -551,20 +551,28 @@ fn dash_run(list: &[&Shape], first: [Pos2; 2], stroke: Stroke) -> usize {
         let gap = q[0] - prev[1];
         let piece = q[1] - q[0];
         let (gl, pl) = (gap.length(), piece.length());
-        if gl < 0.3 || gl > 12.0 || pl > len0 * 1.6 + 0.5 || pl < 0.05 {
+        if gl > 12.0 || pl > len0 * 1.6 + 0.5 || pl < 0.05 {
             break;
         }
-        if let Some(g0) = gap0 {
-            if (gl - g0).abs() > g0 * 0.6 + 0.5 {
+        let a = along.normalized();
+        if gl < 0.3 {
+            // a dash going on round a corner: two pieces that touch; it must not turn back
+            // (an arrow head's line from the end of a dashed line does)
+            if piece.normalized().dot(a) < -0.2 {
                 break;
             }
+        } else {
+            if let Some(g0) = gap0 {
+                if (gl - g0).abs() > g0 * 0.6 + 0.5 {
+                    break;
+                }
+            }
+            // going on the same way (it may bend, along a curve or round a corner, but not turn back)
+            if gap.normalized().dot(a) < 0.2 || piece.normalized().dot(gap.normalized()) < -0.2 {
+                break;
+            }
+            gap0.get_or_insert(gl);
         }
-        // going on the same way (it may bend gently, as along a curve or round a corner)
-        let a = along.normalized();
-        if gap.normalized().dot(a) < 0.2 || piece.normalized().dot(gap.normalized()) < 0.5 {
-            break;
-        }
-        gap0.get_or_insert(gl);
         prev = *q;
         n += 1;
     }
