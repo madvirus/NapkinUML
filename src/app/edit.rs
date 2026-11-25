@@ -84,6 +84,7 @@ impl UmlApp {
             border_color: None,
             border_style: None,
             markers: Vec::new(),
+            timeline: None,
             splits: Vec::new(),
             act_spans: Vec::new(),
             dividers: None,

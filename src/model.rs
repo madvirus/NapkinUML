@@ -16,10 +16,11 @@ pub enum DiagramKind {
     Erd,
     Network,
     MindMap,
+    Timeline,
 }
 
 impl DiagramKind {
-    pub const ALL: [DiagramKind; 12] = [
+    pub const ALL: [DiagramKind; 13] = [
         DiagramKind::Class,
         DiagramKind::Component,
         DiagramKind::Deployment,
@@ -32,6 +33,7 @@ impl DiagramKind {
         DiagramKind::Erd,
         DiagramKind::Network,
         DiagramKind::MindMap,
+        DiagramKind::Timeline,
     ];
 
     pub fn label(self) -> &'static str {
@@ -48,6 +50,7 @@ impl DiagramKind {
             DiagramKind::Erd => "Entity Relationship Diagram",
             DiagramKind::Network => "Network Diagram",
             DiagramKind::MindMap => "Mind Map Diagram",
+            DiagramKind::Timeline => "Timeline Diagram",
         }
     }
 
@@ -65,6 +68,7 @@ impl DiagramKind {
             DiagramKind::Package => "Shows packages and the dependencies, imports and merges between them.",
             DiagramKind::Erd => "Shows database tables, their columns and the relationships between them.",
             DiagramKind::Network => "Shows network devices (routers, switches, firewalls, servers, PCs, phones...), the network zones they sit in and how they are connected. A name may take several lines: Shift+Enter breaks the line.",
+            DiagramKind::Timeline => "Shows events along a time axis, drawn across or down the page. The axis takes its tick labels one per line (an empty line is a tick without a label, so Jan 2021, Jul 2021... or anything else), its direction and its look (a line with ticks, a band or a row of chevrons). Each event is a label whose line drops to the axis at the place it stands over, ending in a flag, a dot, a pin, a milestone diamond on the axis or nothing; drag an event along the axis to move it, or away from it to lengthen its line. Names may take several lines (Shift+Enter).",
             DiagramKind::MindMap => "Shows one central topic with the ideas that branch out of it, and their sub-ideas. Right-click a topic (or use the Properties pane) to put markers on it: a colour tag, a priority, task progress and symbols. Select a topic and press Tab to add a sub-topic, Enter to add a sibling topic (or click Add Sub-topic / Add Topic at the bottom of the palette, or in the topic's right-click menu). The central topic picks the structure (mind map, logic chart or org chart); topics are placed automatically, and a dragged topic joins the topic it is dropped next to. The small circle beside a topic (or Ctrl+/) folds and unfolds its sub-topics. While typing a topic's name, Shift+Enter starts a new line. A topic's shape (capsule, rounded box or underline), border colour and border line (solid, dashed or none) are set in its properties.",
         }
     }
@@ -152,6 +156,12 @@ pub enum ShapeKind {
     CentralTopic,
     /// An idea branching off the central topic or another topic.
     Topic,
+    /// A timeline's time axis (`Shape::timeline` holds its period and look).
+    TimeAxis,
+    /// A label on a timeline whose line drops to the axis at its time.
+    TimeEvent,
+    /// A circle on a timeline's axis with its name inside.
+    TimeMilestone,
 }
 
 impl ShapeKind {
@@ -211,6 +221,9 @@ impl ShapeKind {
             NetworkZone => (320.0, 200.0),
             CentralTopic => (170.0, 64.0),
             Topic => (120.0, 36.0),
+            TimeAxis => (720.0, 30.0),
+            TimeEvent => (150.0, 34.0),
+            TimeMilestone => (70.0, 70.0),
         }
     }
 
@@ -242,7 +255,7 @@ impl ShapeKind {
     /// Shapes whose name may have line breaks typed with Shift+Enter (Enter alone finishes): mind
     /// map topics and everything on a network diagram (devices, clouds, zones).
     pub fn multiline_name(self) -> bool {
-        self.is_topic() || self.is_network_device() || matches!(self, ShapeKind::Cloud | ShapeKind::NetworkZone)
+        self.is_topic() || self.is_network_device() || matches!(self, ShapeKind::Cloud | ShapeKind::NetworkZone | ShapeKind::TimeEvent | ShapeKind::TimeMilestone)
     }
 
     /// Network device pictures (name drawn below them).
@@ -561,6 +574,161 @@ pub struct Shape {
     /// table's order.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub markers: Vec<String>,
+    /// A timeline axis's period and look, or a timeline event's marker (None = the defaults,
+    /// `Shape::timeline`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timeline: Option<Timeline>,
+}
+
+/// A timeline axis: the period it spans (`start` at its left or top end, `end` at the other),
+/// a tick every `step` (none when 0), its look (`AXIS_*`) and direction. A timeline event uses
+/// only `style`, its marker (`MARK_*`).
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq)]
+pub struct Timeline {
+    pub start: f64,
+    pub end: f64,
+    pub step: f64,
+    #[serde(default)]
+    pub style: u8,
+    #[serde(default)]
+    pub vertical: bool,
+}
+
+pub const AXIS_LINE: u8 = 0;
+pub const AXIS_BAND: u8 = 1;
+pub const AXIS_CHEVRONS: u8 = 2;
+pub const AXIS_STYLES: [(u8, &str); 3] = [(AXIS_LINE, "Line"), (AXIS_BAND, "Band"), (AXIS_CHEVRONS, "Chevrons")];
+pub const MARK_FLAG: u8 = 0;
+pub const MARK_DOT: u8 = 1;
+pub const MARK_PIN: u8 = 2;
+/// A filled diamond on the axis (where a pin's dot would be).
+pub const MARK_MILESTONE: u8 = 3;
+/// No marker: only the line (meeting the label at its middle, like a dot's).
+pub const MARK_NONE: u8 = 4;
+pub const MARK_STYLES: [(u8, &str); 5] = [(MARK_NONE, "None"), (MARK_FLAG, "Flag"), (MARK_DOT, "Dot"), (MARK_PIN, "Pin"), (MARK_MILESTONE, "Milestone")];
+
+/// A number as a tick label: whole numbers without decimals.
+pub fn time_label(v: f64, step: f64) -> String {
+    if step.fract() == 0.0 && (v - v.round()).abs() < 1e-6 {
+        format!("{}", v.round() as i64)
+    } else {
+        let s = format!("{v:.2}");
+        s.trim_end_matches('0').trim_end_matches('.').to_string()
+    }
+}
+
+/// Where a timeline event's line meets the axis it stands over (the nearest axis whose span
+/// covers it) and where it meets the event, in diagram units, and whether the event is before
+/// the axis (above it, or left of a vertical one). None when no axis is under or beside it, or
+/// the event sits on the axis.
+///
+/// Across a horizontal axis the line drops from the event's centre (a flag: its left edge,
+/// up to its top) to the axis; beside a vertical axis it runs from the event's near side at its
+/// middle (a flag: along its bottom to its left edge, where the flag's pole stands). It ends on
+/// a line axis's line, or on the near edge of a band or chevrons.
+pub fn timeline_stem(d: &Diagram, ev: &Shape) -> Option<((f32, f32), (f32, f32), bool)> {
+    stem_to(d, ev).map(|(_, s)| s)
+}
+
+/// `timeline_stem` with the id of the axis the line goes to.
+fn stem_to(d: &Diagram, ev: &Shape) -> Option<(u64, ((f32, f32), (f32, f32), bool))> {
+    let mark = ev.timeline().style;
+    let mut best: Option<(f32, (u64, ((f32, f32), (f32, f32), bool)))> = None;
+    for a in d.shapes.iter().filter(|s| s.kind == ShapeKind::TimeAxis) {
+        let t = a.timeline();
+        let line = t.style == AXIS_LINE;
+        let cand = if !t.vertical {
+            let x = if mark == MARK_FLAG { ev.x } else { ev.x + ev.w / 2.0 };
+            if x < a.x - 0.5 || x > a.x + a.w + 0.5 {
+                continue;
+            }
+            let cy = a.y + a.h / 2.0;
+            let before = ev.y + ev.h / 2.0 < cy;
+            let ay = if line { cy } else if before { a.y } else { a.y + a.h };
+            let ly = if mark == MARK_FLAG {
+                if before { ev.y } else { ev.y + ev.h }
+            } else if before {
+                ev.y + ev.h
+            } else {
+                ev.y
+            };
+            let near = if before { ev.y + ev.h } else { ev.y };
+            if (before && near > ay) || (!before && near < ay) {
+                continue;
+            }
+            ((x, ay), (x, ly), before)
+        } else {
+            let y = if mark == MARK_FLAG { ev.y + ev.h } else { ev.y + ev.h / 2.0 };
+            if y < a.y - 0.5 || y > a.y + a.h + 0.5 {
+                continue;
+            }
+            let cx = a.x + a.w / 2.0;
+            let before = ev.x + ev.w / 2.0 < cx;
+            let ax = if line { cx } else if before { a.x } else { a.x + a.w };
+            let near = if before { ev.x + ev.w } else { ev.x };
+            if (before && near > ax) || (!before && near < ax) {
+                continue;
+            }
+            let lx = if mark == MARK_FLAG { ev.x } else { near };
+            ((ax, y), (lx, y), before)
+        };
+        let dist = ((cand.0 .0 - cand.1 .0).powi(2) + (cand.0 .1 - cand.1 .1).powi(2)).sqrt();
+        if best.as_ref().map(|b| dist < b.0).unwrap_or(true) {
+            best = Some((dist, (a.id, cand)));
+        }
+    }
+    best.map(|b| b.1)
+}
+
+/// Put `axis` (a timeline axis just turned between across and down: its box already turned)
+/// in place of the one with its id, and move every event whose line went to the old one so it
+/// meets the turned axis at the same place along it, on the matching side (above ↔ left,
+/// below ↔ right) and as far from it as before (at least 16). Each moved event is narrowed to
+/// `fit` (the width its name needs), so its line ends next to its name.
+pub fn turn_time_axis(d: &mut Diagram, axis: Shape, fit: impl Fn(&Shape) -> f32) {
+    let Some(old) = d.shape(axis.id).cloned() else { return };
+    let (ot, nt) = (old.timeline(), axis.timeline());
+    let moves: Vec<(u64, f32, f32, f32)> = d
+        .shapes
+        .iter()
+        .filter(|e| e.kind == ShapeKind::TimeEvent)
+        .filter_map(|e| {
+            let (aid, ((ax, ay), _, before)) = stem_to(d, e)?;
+            if aid != old.id {
+                return None;
+            }
+            let flag = e.timeline().style == MARK_FLAG;
+            let w = fit(e).min(e.w).max(1.0);
+            // its place along the old axis (0..1) and its gap from it
+            let (k, gap) = if ot.vertical {
+                ((ay - old.y) / old.h.max(1.0), if before { ax - (e.x + e.w) } else { e.x - ax })
+            } else {
+                ((ax - old.x) / old.w.max(1.0), if before { ay - (e.y + e.h) } else { e.y - ay })
+            };
+            let gap = gap.max(16.0);
+            let line = nt.style == AXIS_LINE;
+            let at = if nt.vertical {
+                let along = axis.y + k * axis.h;
+                let edge = if line { axis.x + axis.w / 2.0 } else if before { axis.x } else { axis.x + axis.w };
+                (if before { edge - gap - w } else { edge + gap }, if flag { along - e.h } else { along - e.h / 2.0 })
+            } else {
+                let along = axis.x + k * axis.w;
+                let edge = if line { axis.y + axis.h / 2.0 } else if before { axis.y } else { axis.y + axis.h };
+                (if flag { along } else { along - w / 2.0 }, if before { edge - gap - e.h } else { edge + gap })
+            };
+            Some((e.id, at.0, at.1, w))
+        })
+        .collect();
+    for (id, x, y, w) in moves {
+        if let Some(e) = d.shape_mut(id) {
+            e.x = x;
+            e.y = y;
+            e.w = w;
+        }
+    }
+    if let Some(a) = d.shape_mut(axis.id) {
+        *a = axis;
+    }
 }
 
 /// How a marker is drawn.
@@ -777,6 +945,27 @@ pub const ALT_HEAD: f32 = 34.0;
 
 impl Shape {
     /// A mind map topic's outline as drawn (its own choice, else its kind's).
+    /// A timeline axis's period and look, or an event's marker (with the defaults filled in:
+    /// 2020 to 2030 by 1, a line; a dot).
+    pub fn timeline(&self) -> Timeline {
+        self.timeline.unwrap_or(Timeline { start: 2020.0, end: 2030.0, step: 1.0, style: if self.kind == ShapeKind::TimeEvent { MARK_DOT } else { AXIS_LINE }, vertical: false })
+    }
+
+    /// A timeline axis's tick labels, first (left or top) to last, one per tick; an empty one is
+    /// a tick without a label. They are the axis's lines (`attributes`); an axis without any
+    /// (a new one, or one saved before ticks were typed) counts `start` to `end` by `step`.
+    pub fn axis_ticks(&self) -> Vec<String> {
+        if !self.attributes.is_empty() {
+            return self.attributes.clone();
+        }
+        let t = self.timeline();
+        if t.step <= 0.0 || t.end <= t.start || !t.step.is_finite() {
+            return vec![];
+        }
+        let n = ((t.end - t.start) / t.step + 1e-6).floor().min(500.0) as usize;
+        (0..=n).map(|i| time_label(t.start + i as f64 * t.step, t.step)).collect()
+    }
+
     pub fn topic_look(&self) -> u8 {
         self.topic_shape.unwrap_or(if self.kind == ShapeKind::CentralTopic { TOPIC_CAPSULE } else { TOPIC_ROUNDED })
     }
@@ -811,6 +1000,7 @@ impl Shape {
             border_color: None,
             border_style: None,
             markers: Vec::new(),
+            timeline: None,
             splits: Vec::new(),
             act_spans: Vec::new(),
             dividers: None,
@@ -1479,13 +1669,33 @@ impl Project {
             b.conn(C::Branch, a, z, "", "", "");
         }
 
+        let mut b = Builder::new(&mut p, DiagramKind::Timeline, "Release Plan");
+        // 2020 to 2030 over 800 units: 80 a year
+        let axis = b.push(S::TimeAxis, 0.0, 300.0, 800.0, 30.0, "Timeline", &["Jan 2021", "Jul 2021", "Jan 2022", "", "Jan 2023", "Jul 2023", "Jan 2024", "", "Jan 2025", "Jul 2025", "Jan 2026"], &[]);
+        b.timeline(axis, Timeline { start: 2020.0, end: 2030.0, step: 1.0, style: AXIS_LINE, vertical: false });
+        let ev = |b: &mut Builder, x: f32, y: f32, w: f32, name: &str, mark: u8| {
+            let id = b.shape_h(S::TimeEvent, x, y, w, if name.contains('\n') { 48.0 } else { 34.0 }, name);
+            b.timeline(id, Timeline { start: 0.0, end: 0.0, step: 0.0, style: mark, vertical: false });
+            id
+        };
+        ev(&mut b, 40.0, 200.0, 130.0, "Project starts\nMarch 2021", MARK_FLAG);
+        ev(&mut b, 150.0, 130.0, 130.0, "First prototype", MARK_DOT);
+        ev(&mut b, 290.0, 220.0, 120.0, "Seed funding", MARK_FLAG);
+        ev(&mut b, 390.0, 90.0, 140.0, "Public beta", MARK_DOT);
+        let v1 = ev(&mut b, 560.0, 170.0, 120.0, "Version 1.0", MARK_FLAG);
+        b.color(v1, [0xE5, 0x39, 0x35, 255]);
+        ev(&mut b, 60.0, 420.0, 120.0, "Office opens", MARK_DOT);
+        ev(&mut b, 260.0, 380.0, 140.0, "Team grows to 10", MARK_PIN);
+        ev(&mut b, 560.0, 400.0, 130.0, "Mobile app", MARK_PIN);
+        ev(&mut b, 680.0, 120.0, 120.0, "Launch", MARK_MILESTONE);
+
         // folders: the diagrams grouped the way a team might organise them
         let req = p.add_folder("0-Requirements", None);
         let arch = p.add_folder("1-Architecture", None);
         let design = p.add_folder("2-Design", None);
         let behavior = p.add_folder("2.1-Behavior", Some(design));
         let db = p.add_folder("3-Database", None);
-        let plan = [design, arch, arch, req, behavior, behavior, behavior, design, arch, db, arch, req];
+        let plan = [design, arch, arch, req, behavior, behavior, behavior, design, arch, db, arch, req, req];
         for (d, f) in p.diagrams.iter_mut().zip(plan) {
             d.folder = Some(f);
         }
@@ -1525,6 +1735,18 @@ impl<'a> Builder<'a> {
 
     fn shape_h(&mut self, kind: ShapeKind, x: f32, y: f32, w: f32, h: f32, name: &str) -> u64 {
         self.push(kind, x, y, w, h, name, &[], &[])
+    }
+
+    fn timeline(&mut self, id: u64, t: Timeline) {
+        if let Some(s) = self.p.diagram_mut(self.did).unwrap().shape_mut(id) {
+            s.timeline = Some(t);
+        }
+    }
+
+    fn color(&mut self, id: u64, c: [u8; 4]) {
+        if let Some(s) = self.p.diagram_mut(self.did).unwrap().shape_mut(id) {
+            s.border_color = Some(c);
+        }
     }
 
     fn partitions(&mut self, id: u64, parts: &[(&str, f32)]) {
@@ -1745,6 +1967,65 @@ pub fn shift_lane_contents(dm: &mut Diagram, lane: &Shape, from: f32, delta: f32
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn timeline_events_drop_to_their_axis() {
+        let mut d = diagram(DiagramKind::Timeline, vec![]);
+        let mut axis = Shape::new(1, ShapeKind::TimeAxis, 0.0, 100.0, 800.0, 30.0);
+        axis.timeline = Some(Timeline { start: 2020.0, end: 2030.0, step: 1.0, style: AXIS_LINE, vertical: false });
+        d.shapes.push(axis.clone());
+        // a dot above the axis: from its bottom centre to the axis line
+        d.shapes.push(Shape::new(2, ShapeKind::TimeEvent, 100.0, 20.0, 100.0, 30.0));
+        assert_eq!(timeline_stem(&d, &d.shapes[1]), Some(((150.0, 115.0), (150.0, 50.0), true)));
+        // a flag below a band: from its left edge, from the band's bottom to the event's bottom
+        let mut flag = Shape::new(3, ShapeKind::TimeEvent, 300.0, 200.0, 100.0, 30.0);
+        flag.timeline = Some(Timeline { start: 0.0, end: 0.0, step: 0.0, style: MARK_FLAG, vertical: false });
+        d.shapes.push(flag);
+        d.shapes[0].timeline = Some(Timeline { style: AXIS_BAND, ..axis.timeline.unwrap() });
+        assert_eq!(timeline_stem(&d, &d.shapes[2]), Some(((300.0, 130.0), (300.0, 230.0), false)));
+        // past the axis's end: no line
+        d.shapes.push(Shape::new(4, ShapeKind::TimeEvent, 900.0, 20.0, 100.0, 30.0));
+        assert_eq!(timeline_stem(&d, &d.shapes[3]), None);
+    }
+
+    #[test]
+    fn turning_an_axis_carries_its_events() {
+        let mut d = diagram(DiagramKind::Timeline, vec![]);
+        let mut axis = Shape::new(1, ShapeKind::TimeAxis, 0.0, 100.0, 800.0, 30.0);
+        axis.timeline = Some(Timeline { start: 2020.0, end: 2030.0, step: 1.0, style: AXIS_LINE, vertical: false });
+        d.shapes.push(axis.clone());
+        d.shapes.push(Shape::new(2, ShapeKind::TimeEvent, 100.0, 20.0, 100.0, 30.0));
+        let mut flag = Shape::new(3, ShapeKind::TimeEvent, 400.0, 200.0, 100.0, 30.0);
+        flag.timeline = Some(Timeline { start: 0.0, end: 0.0, step: 0.0, style: MARK_FLAG, vertical: false });
+        d.shapes.push(flag);
+        let turn = |d: &mut Diagram| {
+            let mut a = d.shapes[0].clone();
+            let mut t = a.timeline();
+            t.vertical = !t.vertical;
+            a.timeline = Some(t);
+            std::mem::swap(&mut a.w, &mut a.h);
+            turn_time_axis(d, a, |e| e.w);
+        };
+        turn(&mut d);
+        // above -> left of the axis, at the same place along it and as far away
+        assert_eq!((d.shapes[1].x, d.shapes[1].y), (-150.0, 235.0));
+        assert_eq!(timeline_stem(&d, &d.shapes[1]), Some(((15.0, 250.0), (-50.0, 250.0), true)));
+        // a flag below -> right of it, its line along its bottom to its left edge (the pole)
+        assert_eq!((d.shapes[2].x, d.shapes[2].y), (100.0, 470.0));
+        assert_eq!(timeline_stem(&d, &d.shapes[2]), Some(((15.0, 500.0), (100.0, 500.0), false)));
+        turn(&mut d);
+        assert_eq!((d.shapes[1].x, d.shapes[1].y), (100.0, 20.0));
+        assert_eq!((d.shapes[2].x, d.shapes[2].y), (400.0, 200.0));
+    }
+
+    #[test]
+    fn axis_ticks_are_typed_or_counted() {
+        let mut axis = Shape::new(1, ShapeKind::TimeAxis, 0.0, 0.0, 800.0, 30.0);
+        axis.timeline = Some(Timeline { start: 2020.0, end: 2023.0, step: 1.0, style: AXIS_LINE, vertical: false });
+        assert_eq!(axis.axis_ticks(), ["2020", "2021", "2022", "2023"]);
+        axis.attributes = vec!["2021년 1월".into(), "".into(), "2022년 1월".into()];
+        assert_eq!(axis.axis_ticks(), ["2021년 1월", "", "2022년 1월"]);
+    }
 
     #[test]
     fn one_marker_per_group_but_symbols_stack() {

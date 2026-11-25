@@ -275,15 +275,16 @@ impl UmlApp {
         }
     }
 
-    /// Diagram Navigator by diagram type: the project, three groups, each diagram type with
+    /// Diagram Navigator by diagram type: the project, four groups (UML, database, network and
+    /// general purpose: mind maps and timelines), each diagram type with
     /// its count, and the diagrams of that type.
     pub(super) fn navigator_by_type(&mut self, ui: &mut egui::Ui, project: &Project) {
         let lang = self.settings.language;
         let groups: [(&str, Vec<DiagramKind>); 4] = [
-            ("UML Diagrams", DiagramKind::ALL.iter().copied().filter(|k| !matches!(k, DiagramKind::Erd | DiagramKind::Network | DiagramKind::MindMap)).collect()),
+            ("UML Diagrams", DiagramKind::ALL.iter().copied().filter(|k| !matches!(k, DiagramKind::Erd | DiagramKind::Network | DiagramKind::MindMap | DiagramKind::Timeline)).collect()),
             ("Database Modeling", vec![DiagramKind::Erd]),
             ("Network", vec![DiagramKind::Network]),
-            ("Mind Map", vec![DiagramKind::MindMap]),
+            ("General Purpose", vec![DiagramKind::MindMap, DiagramKind::Timeline]),
         ];
         let mut rows: Vec<TreeRow> = vec![];
         let root = TreeKey::Root(1);

@@ -249,6 +249,12 @@ fn palette_base(kind: DiagramKind) -> Vec<PaletteEntry> {
             // no Branch tool: branches come from Tab/Enter and from dragging a topic onto another
             ANCHOR,
         ],
+        DiagramKind::Timeline => vec![
+            s(K::TimeAxis, "Time Axis", "the time line: its tick labels (one per line), direction (across or down) and look are set in its properties"),
+            s(K::TimeEvent, "Event", "a label whose line drops to the time axis at its place (a flag, a dot, a pin, a milestone diamond or none)"),
+            NOTE,
+            ANCHOR,
+        ],
         DiagramKind::Erd => vec![
             s(K::Entity, "Entity", "a database table"),
             s(K::DbView, "View", "a database view"),
@@ -306,6 +312,9 @@ pub fn base_name(kind: ShapeKind) -> &'static str {
         NetworkZone => "Zone",
         CentralTopic => "Central Topic",
         Topic => "Topic",
+        TimeAxis => "Timeline",
+        TimeEvent => "Event",
+        TimeMilestone => "Milestone",
         Constraint => "constraint",
         Collaboration => "Collaboration",
         Component => "Component",

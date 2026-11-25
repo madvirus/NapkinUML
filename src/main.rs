@@ -5,7 +5,7 @@
 //! Options:
 //!   --screenshot <file.png>  draw about 120 frames, save the window as PNG and exit
 //!   --new                    start with an empty project (used by Window > New Window)
-//!   --diagram <n>            open the n-th example diagram first (0-10)
+//!   --diagram <n>            open the n-th example diagram first (0-12)
 //!   <file.umlp>              open a saved project
 //!   --ai <request> --ai-out <out.umlp> [<file.umlp>]
 //!                            ask the AI agent (as set in the AI Assistant) to draw or change

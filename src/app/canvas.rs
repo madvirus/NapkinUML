@@ -245,7 +245,8 @@ impl UmlApp {
         for s in containers {
             render::draw_shape(&painter, &cam, s, &look, &opts);
         }
-        for s in d.shapes.iter().filter(|s| !s.kind.is_container()) {
+        render::timeline_stems(&painter, &cam, &d, &look);
+        for s in render::paint_order(&d) {
             render::draw_shape(&painter, &cam, s, &look, &opts);
         }
         // message numbers follow their vertical order

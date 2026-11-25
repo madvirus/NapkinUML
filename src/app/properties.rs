@@ -224,6 +224,8 @@ impl UmlApp {
         let default_fill = self.look().fill(s.kind).to_array();
         let default_size = self.settings.text_size;
         let mut field_changed: Option<u8> = None;
+        // a timeline axis turned between across and down: its events move with it
+        let mut turned = false;
         ui.label(egui::RichText::new(palette::label_for(d.kind, Tool::Shape(s.kind))).strong());
         ui.add_space(4.0);
         egui::Grid::new("shape_props").num_columns(2).spacing([8.0, 6.0]).show(ui, |ui| {
@@ -435,6 +437,89 @@ impl UmlApp {
                 });
                 ui.end_row();
             }
+            if s.kind == ShapeKind::TimeAxis {
+                // the period, ticks, direction and look of a timeline's axis
+                use crate::model::AXIS_STYLES;
+                let mut t = s.timeline();
+                let before = t;
+                ui.label(tr(lang, "Orientation"));
+                egui::ComboBox::from_id_salt("axis_orient").selected_text(tr(lang, if t.vertical { "Vertical" } else { "Horizontal" })).show_ui(ui, |ui| {
+                    for (v, l) in [(false, "Horizontal"), (true, "Vertical")] {
+                        if ui.selectable_label(t.vertical == v, tr(lang, l)).clicked() {
+                            t.vertical = v;
+                        }
+                    }
+                });
+                ui.end_row();
+                ui.label(tr(lang, "Axis Style"));
+                egui::ComboBox::from_id_salt("axis_style").selected_text(tr(lang, AXIS_STYLES.iter().find(|(v, _)| *v == t.style).map(|(_, l)| *l).unwrap_or(""))).show_ui(ui, |ui| {
+                    for (v, l) in AXIS_STYLES {
+                        if ui.selectable_label(t.style == v, tr(lang, l)).clicked() {
+                            t.style = v;
+                        }
+                    }
+                });
+                ui.end_row();
+                // the tick labels, one per line (an empty line: a tick without a label)
+                ui.label(tr(lang, "Ticks"));
+                let mut text = s.axis_ticks().join("\n");
+                let te = egui::TextEdit::multiline(&mut text).desired_rows(6).desired_width(f32::INFINITY);
+                if ui.add(te).on_hover_text(tr(lang, "One tick per line, from the left (top) end to the other; an empty line is a tick without a label.")).changed() {
+                    s.attributes = text.split('\n').map(|l| l.to_string()).collect();
+                    field_changed = Some(25);
+                }
+                ui.end_row();
+                if t != before {
+                    // turning the axis turns its box too
+                    if t.vertical != before.vertical {
+                        std::mem::swap(&mut s.w, &mut s.h);
+                        turned = true;
+                    }
+                    s.timeline = Some(t);
+                    field_changed = Some(23);
+                }
+            }
+            if s.kind == ShapeKind::TimeEvent {
+                use crate::model::MARK_STYLES;
+                let mut t = s.timeline();
+                let before = t;
+                ui.label(tr(lang, "Marker"));
+                egui::ComboBox::from_id_salt("event_mark").selected_text(tr(lang, MARK_STYLES.iter().find(|(v, _)| *v == t.style).map(|(_, l)| *l).unwrap_or(""))).show_ui(ui, |ui| {
+                    for (v, l) in MARK_STYLES {
+                        if ui.selectable_label(t.style == v, tr(lang, l)).clicked() {
+                            t.style = v;
+                        }
+                    }
+                });
+                ui.end_row();
+                if t != before {
+                    // the event stays where it meets the axis: a flag's line starts at the label's
+                    // left edge (or bottom), a dot's at its middle, so the label moves instead
+                    let was = crate::model::timeline_stem(d, &s);
+                    s.timeline = Some(t);
+                    if let (Some(((ax0, ay0), _, _)), Some(((ax1, ay1), _, _))) = (was, crate::model::timeline_stem(d, &s)) {
+                        s.x += ax0 - ax1;
+                        s.y += ay0 - ay1;
+                    }
+                    field_changed = Some(23);
+                }
+                ui.label(tr(lang, "Color"));
+                ui.horizontal(|ui| {
+                    let mut def = s.border_color.is_none();
+                    if ui.checkbox(&mut def, tr(lang, "Default")).changed() {
+                        s.border_color = if def { None } else { Some(render::event_color(&s, &self.look()).to_array()) };
+                        field_changed = Some(24);
+                    }
+                    if let Some(f) = s.border_color {
+                        let mut c = Color32::from_rgba_unmultiplied(f[0], f[1], f[2], f[3]);
+                        if ui.color_edit_button_srgba(&mut c).changed() {
+                            s.border_color = Some(c.to_array());
+                            field_changed = Some(24);
+                        }
+                    }
+                });
+                ui.end_row();
+            }
             if s.kind == ShapeKind::RequiredInterface {
                 let dirs = ["Right", "Down", "Left", "Up"];
                 ui.label(tr(lang, "Opening"));
@@ -594,8 +679,11 @@ impl UmlApp {
                 s.h = render::min_size(ui.ctx(), &s, &opts, &self.look()).y.max(30.0);
             }
             self.edit_checkpoint((s.id, f));
+            let fit = (ui.ctx().clone(), self.project.as_ref().map(|p| p.options.clone()).unwrap_or_default(), self.look());
             if let Some(dm) = self.diag_mut() {
-                if let Some(t) = dm.shape_mut(s.id) {
+                if turned {
+                    crate::model::turn_time_axis(dm, s, |e| render::min_size(&fit.0, e, &fit.1, &fit.2).x);
+                } else if let Some(t) = dm.shape_mut(s.id) {
                     *t = s;
                 }
             }

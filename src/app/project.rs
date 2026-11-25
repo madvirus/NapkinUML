@@ -76,6 +76,18 @@ impl UmlApp {
                 ed.select_all = true;
             }
         }
+        if kind == DiagramKind::Timeline {
+            // a new timeline starts from its time axis across the middle of the view
+            let r = self.canvas_rect;
+            let (cx, cy) = match self.view() {
+                v if r.is_positive() && v.zoom > 0.0 => ((r.width() / 2.0 - v.pan.x) / v.zoom, (r.height() / 2.0 - v.pan.y) / v.zoom),
+                _ => (400.0, 250.0),
+            };
+            let undo_before = self.undo.len();
+            self.create_shape(ShapeKind::TimeAxis, cx.round(), cy.round());
+            self.undo.truncate(undo_before);
+            self.editing = None;
+        }
     }
 
     pub(super) fn delete_diagram(&mut self, id: u64) {

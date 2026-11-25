@@ -120,9 +120,22 @@ impl Look {
     /// Default fill of a shape kind. Every shape starts with DefaultShapeBackground
     /// = RGB(122, 207, 245) (v.ddg.r.<clinit> bT -> field Iv, setter f(Color)).
     /// Big frames (system, fragments, swimlanes) and stick figures stay unfilled (estimated).
+    /// A colour as this look shows it (darkened in the dark look, like the default fills).
+    pub fn tint(&self, r: u8, g: u8, b: u8) -> Color32 {
+        if self.dark {
+            Color32::from_rgb((r as f32 * 0.28) as u8 + 20, (g as f32 * 0.28) as u8 + 22, (b as f32 * 0.28) as u8 + 28)
+        } else {
+            Color32::from_rgb(r, g, b)
+        }
+    }
+
     pub fn fill(&self, kind: ShapeKind) -> Color32 {
         use ShapeKind::*;
         let (r, g, b) = match kind {
+            TimeEvent => (self.bg.r(), self.bg.g(), self.bg.b()),
+            // a timeline's band (soft orange) and milestones (purple)
+            TimeAxis => (255, 214, 170),
+            TimeMilestone => (156, 77, 244),
             Constraint | System | AltFragment | LoopFragment | Actor | ActorLifeline | VerticalSwimlane | HorizontalSwimlane | NetworkZone => (self.bg.r(), self.bg.g(), self.bg.b()),
             // network pictures get soft colours of their own
             Firewall | WebFirewall => (254, 222, 212),
@@ -244,6 +257,18 @@ pub fn min_size(ctx: &egui::Context, shape: &Shape, opts: &ProjectOptions, look:
             Vec2::new((w + 12.0).max(20.0), lines.len().max(1) as f32 * lh + 8.0)
         }
         Lifeline | ActorLifeline => Vec2::new(text_width(ctx, &shape.name, ts) + 24.0, 120.0),
+        // a timeline event: its lines, with room for a flag
+        TimeEvent | TimeMilestone => {
+            let lines: Vec<&str> = shape.name.split('\n').collect();
+            let w = lines.iter().map(|l| text_width(ctx, l, ts)).fold(0.0, f32::max);
+            let h = lines.len().max(1) as f32 * lh;
+            if shape.kind == TimeMilestone {
+                Vec2::new(w + 18.0, h + 18.0)
+            } else {
+                let pad = if shape.timeline().style == crate::model::MARK_FLAG { 22.0 } else { 14.0 };
+                Vec2::new(w + pad, h + 8.0)
+            }
+        }
         // a topic's name may have line breaks: as wide as its longest line, as tall as its lines
         CentralTopic | Topic => {
             let k = if shape.kind == CentralTopic { 1.2 } else { 1.0 };
@@ -588,6 +613,164 @@ fn topic_outline(painter: &Painter, pts: &[Pos2], stroke: Stroke, style: u8, zoo
             painter.add(epaint::Shape::line(pts.to_vec(), stroke));
         }
     }
+}
+
+/// A timeline event's colour: its line, marker and name (the user's, or black: the diagram's
+/// strongest ink, light in the dark look).
+pub fn event_color(s: &Shape, look: &Look) -> Color32 {
+    s.border_color.map(|c| Color32::from_rgba_unmultiplied(c[0], c[1], c[2], c[3])).unwrap_or(look.solid())
+}
+
+/// A timeline axis: a line with end bars and ticks, a band, or a row of chevrons, across `r`
+/// or down it. Its ticks (`Shape::axis_ticks`) are spread evenly from one end to the other,
+/// each with its label (none for an empty one); chevrons are equal parts, one per label.
+#[allow(clippy::too_many_arguments)]
+fn draw_time_axis(painter: &Painter, look: &Look, shape: &Shape, r: Rect, z: f32, sw: f32, line: Color32, f: FontId, tc: Color32) {
+    use crate::model::{AXIS_BAND, AXIS_CHEVRONS};
+    let t = shape.timeline();
+    let vert = t.vertical;
+    let labels = shape.axis_ticks();
+    let n = labels.len();
+    let (base, len) = if vert { (r.top(), r.height()) } else { (r.left(), r.width()) };
+    // a place along the axis (0 = first end, 1 = last end) and tick i's place
+    let at = |k: f32| base + k * len;
+    let tick_at = |i: usize| at(if n > 1 { i as f32 / (n - 1) as f32 } else { 0.0 });
+    let fill = shape.fill.map(|c| Color32::from_rgba_unmultiplied(c[0], c[1], c[2], c[3]));
+    match t.style {
+        AXIS_BAND => {
+            painter.rect_filled(r, 0.0, fill.unwrap_or(look.fill(ShapeKind::TimeAxis)));
+            for (i, l) in labels.iter().enumerate() {
+                if vert {
+                    text_at(painter, look, Pos2::new(r.right() + 5.0 * z, tick_at(i)), Align2::LEFT_CENTER, l, f.clone(), tc);
+                } else {
+                    text_at(painter, look, Pos2::new(tick_at(i), r.bottom() + 3.0 * z), Align2::CENTER_TOP, l, f.clone(), tc);
+                }
+            }
+        }
+        AXIS_CHEVRONS => {
+            let fill = fill.unwrap_or(look.tint(213, 232, 212));
+            let edge = Stroke::new((sw * 0.8).max(0.6), Color32::from_rgb((fill.r() as f32 * 0.72) as u8, (fill.g() as f32 * 0.8) as u8, (fill.b() as f32 * 0.72) as u8));
+            let parts = n.max(1);
+            let thick = if vert { r.width() } else { r.height() };
+            let g = 3.0 * z;
+            // a point (along the axis, across it 0..1) on the screen
+            let pt = |u: f32, v: f32| if vert { Pos2::new(r.left() + v * r.width(), u) } else { Pos2::new(u, r.top() + v * r.height()) };
+            let poly = |mut pts: Vec<Pos2>| {
+                if vert {
+                    pts.reverse();
+                }
+                painter.add(epaint::Shape::convex_polygon(pts, fill, Stroke::NONE));
+            };
+            let seam = 0.5 + 0.8 / thick.max(1.0);
+            for i in 0..parts {
+                let (a0, a1) = (at(i as f32 / parts as f32), at((i + 1) as f32 / parts as f32));
+                let p = (thick * 0.35).min((a1 - a0) * 0.45).max(0.0);
+                // back corners, back notch, front corners and front point along the axis
+                let (tl, nl) = if i == 0 { (a0, a0) } else { (a0 - p + g / 2.0, a0 + g / 2.0) };
+                let (tr, tip) = (a1 - p - g / 2.0, a1 - g / 2.0);
+                poly(vec![pt(tl, 0.0), pt(tr, 0.0), pt(tip, 0.5), pt(nl, 0.5)]);
+                poly(vec![pt(nl + (tl - nl) * (seam - 0.5) * 2.0, 0.5 - (seam - 0.5)), pt(tip + (tr - tip) * (seam - 0.5) * 2.0, 0.5 - (seam - 0.5)), pt(tr, 1.0), pt(tl, 1.0)]);
+                painter.add(epaint::Shape::closed_line(vec![pt(tl, 0.0), pt(tr, 0.0), pt(tip, 0.5), pt(tr, 1.0), pt(tl, 1.0), pt(nl, 0.5)], edge));
+                if let Some(l) = labels.get(i) {
+                    text_at(painter, look, pt((nl + tip) / 2.0, 0.5), Align2::CENTER_CENTER, l, f.clone(), tc);
+                }
+            }
+        }
+        _ => {
+            let col = shape.border_color.map(|c| Color32::from_rgba_unmultiplied(c[0], c[1], c[2], c[3])).unwrap_or(line);
+            let st = Stroke::new((sw * 1.8).max(1.0), col);
+            let thin = Stroke::new(sw.max(0.6), col);
+            let (bar, tick) = (8.0 * z, 7.0 * z);
+            if vert {
+                let cx = r.center().x;
+                painter.line_segment([Pos2::new(cx, r.top()), Pos2::new(cx, r.bottom())], st);
+                for y in [r.top(), r.bottom()] {
+                    painter.line_segment([Pos2::new(cx - bar, y), Pos2::new(cx + bar, y)], st);
+                }
+                for (i, l) in labels.iter().enumerate() {
+                    let y = tick_at(i);
+                    if (y - r.top()).abs() > 1.0 && (y - r.bottom()).abs() > 1.0 {
+                        painter.line_segment([Pos2::new(cx, y), Pos2::new(cx + tick, y)], thin);
+                    }
+                    text_at(painter, look, Pos2::new(cx + bar + 4.0 * z, y), Align2::LEFT_CENTER, l, f.clone(), tc);
+                }
+            } else {
+                let cy = r.center().y;
+                painter.line_segment([Pos2::new(r.left(), cy), Pos2::new(r.right(), cy)], st);
+                for x in [r.left(), r.right()] {
+                    painter.line_segment([Pos2::new(x, cy - bar), Pos2::new(x, cy + bar)], st);
+                }
+                for (i, l) in labels.iter().enumerate() {
+                    let x = tick_at(i);
+                    if (x - r.left()).abs() > 1.0 && (x - r.right()).abs() > 1.0 {
+                        painter.line_segment([Pos2::new(x, cy), Pos2::new(x, cy + tick)], thin);
+                    }
+                    text_at(painter, look, Pos2::new(x, cy + bar + 3.0 * z), Align2::CENTER_TOP, l, f.clone(), tc);
+                }
+            }
+        }
+    }
+}
+
+/// Every timeline event's line to its axis, with its marker: a flag at the event's end, a dot
+/// where it meets the event, or on the axis a pin (a dot) or a milestone (a filled diamond).
+/// Drawn under the shapes.
+pub fn timeline_stems(painter: &Painter, cam: &Cam, d: &crate::model::Diagram, look: &Look) {
+    use crate::model::{MARK_FLAG, MARK_MILESTONE, MARK_PIN};
+    if look.icon {
+        return;
+    }
+    let z = cam.zoom;
+    for ev in d.shapes.iter().filter(|s| s.kind == ShapeKind::TimeEvent) {
+        let Some(((ax, ay), (lx, ly), before)) = crate::model::timeline_stem(d, ev) else { continue };
+        let col = event_color(ev, look);
+        let (pa, pl) = (cam.pt(ax, ay), cam.pt(lx, ly));
+        painter.line_segment([pa, pl], Stroke::new((1.1 * z).clamp(0.6, 2.0), col));
+        // the line runs up or down (across a horizontal axis)
+        let upright = (ax - lx).abs() < 0.01;
+        match ev.timeline().style {
+            MARK_FLAG if upright => {
+                let (h, w) = (15.0 * z, 9.0 * z);
+                let pts = if before {
+                    vec![pl, Pos2::new(pl.x + w, pl.y + h), Pos2::new(pl.x, pl.y + h)]
+                } else {
+                    vec![Pos2::new(pl.x, pl.y - h), Pos2::new(pl.x + w, pl.y - h), pl]
+                };
+                painter.add(epaint::Shape::convex_polygon(pts, col, Stroke::NONE));
+            }
+            MARK_FLAG => {
+                // beside a vertical axis: a pole up the event's left edge with the flag at its top
+                let top = cam.pt(ev.x, ev.y);
+                painter.line_segment([pl, top], Stroke::new((1.1 * z).clamp(0.6, 2.0), col));
+                let (h, w) = (15.0 * z, 9.0 * z);
+                painter.add(epaint::Shape::convex_polygon(vec![top, Pos2::new(top.x + w, top.y + h), Pos2::new(top.x, top.y + h)], col, Stroke::NONE));
+            }
+            MARK_PIN => {
+                painter.circle(pa, 4.5 * z, col, Stroke::new(1.2 * z, look.background()));
+            }
+            MARK_MILESTONE => {
+                let s = 7.0 * z;
+                let pts = vec![pa + Vec2::new(0.0, -s), pa + Vec2::new(s, 0.0), pa + Vec2::new(0.0, s), pa + Vec2::new(-s, 0.0)];
+                painter.add(epaint::Shape::convex_polygon(pts, col, Stroke::new(1.2 * z, look.background())));
+            }
+            crate::model::MARK_NONE => {}
+            _ => {
+                painter.circle_filled(pl, 3.8 * z, col);
+            }
+        }
+    }
+}
+
+/// The shapes that aren't containers, in drawing order: timeline axes first and milestones
+/// last, so events' lines run into the axis and under the milestones.
+pub fn paint_order(d: &crate::model::Diagram) -> Vec<&Shape> {
+    let mut v: Vec<&Shape> = d.shapes.iter().filter(|s| !s.kind.is_container()).collect();
+    v.sort_by_key(|s| match s.kind {
+        ShapeKind::TimeAxis => 0,
+        ShapeKind::TimeMilestone => 2,
+        _ => 1,
+    });
+    v
 }
 
 /// A marker's size against the name's font size, the space between two markers and between
@@ -954,6 +1137,35 @@ pub fn draw_shape(painter: &Painter, cam: &Cam, shape: &Shape, look: &Look, opts
                 let c = Pos2::new(r.center().x, r.top() + r.height() * 0.62);
                 text_at(painter, look, c, Align2::CENTER_CENTER, &shape.name, f.clone(), tc);
             }
+        }
+        TimeAxis => draw_time_axis(painter, look, shape, r, z, stroke.width, line, f.clone(), tc),
+        TimeEvent => {
+            let col = event_color(shape, look);
+            if look.icon {
+                // a flag on a pole
+                let x = r.left() + r.width() * 0.3;
+                painter.line_segment([Pos2::new(x, r.top()), Pos2::new(x, r.bottom())], Stroke::new(1.3_f32, col));
+                let h = r.height() * 0.45;
+                painter.add(epaint::Shape::convex_polygon(vec![Pos2::new(x, r.top()), Pos2::new(x + r.width() * 0.45, r.top() + h), Pos2::new(x, r.top() + h)], col, Stroke::NONE));
+            } else {
+                if shape.fill.is_some() {
+                    painter.rect_filled(r, 4.0 * z, fill);
+                }
+                if shape.timeline().style == crate::model::MARK_FLAG {
+                    // beside the flag at its left edge
+                    text_at(painter, look, Pos2::new(r.left() + 13.0 * z, r.center().y), Align2::LEFT_CENTER, &shape.name, f.clone(), col);
+                } else {
+                    centered_lines(painter, look, r, &shape.name, f.clone(), col);
+                }
+            }
+        }
+        TimeMilestone => {
+            let pts = ellipse_points(r.center(), r.width() / 2.0, r.height() / 2.0, 64);
+            painter.add(epaint::Shape::convex_polygon(pts, fill, Stroke::NONE));
+            // white on a dark circle, dark on a light one
+            let lum = 0.299 * fill.r() as f32 + 0.587 * fill.g() as f32 + 0.114 * fill.b() as f32;
+            let col = if lum > 165.0 { Color32::from_rgb(40, 40, 48) } else { Color32::WHITE };
+            centered_lines(painter, look, r, &shape.name, f.clone(), col);
         }
         CentralTopic | Topic => {
             // the central topic: a thicker outline and a larger name; either kind may take any of
@@ -1798,7 +2010,8 @@ pub fn paint_diagram(painter: &Painter, cam: &Cam, d: &crate::model::Diagram, lo
     for s in containers {
         draw_shape(painter, cam, s, look, opts);
     }
-    for s in d.shapes.iter().filter(|s| !s.kind.is_container()) {
+    timeline_stems(painter, cam, d, look);
+    for s in paint_order(d) {
         draw_shape(painter, cam, s, look, opts);
     }
     let (lay, paths) = crate::seq::all_paths(d, opts);
@@ -2016,6 +2229,8 @@ pub fn draw_icon(painter: &Painter, rect: Rect, tool: Tool, look: &Look, opts: &
                 ShapeKind::Fork | ShapeKind::Join => (100.0, 14.0),
                 ShapeKind::Constraint => (60.0, 40.0),
                 ShapeKind::Text => (40.0, 40.0),
+                ShapeKind::TimeAxis => (60.0, 26.0),
+                ShapeKind::TimeEvent => (40.0, 40.0),
                 k => k.default_size(),
             };
             let avail = rect.shrink(1.0);
@@ -2048,6 +2263,7 @@ pub fn draw_icon(painter: &Painter, rect: Rect, tool: Tool, look: &Look, opts: &
             border_color: None,
             border_style: None,
             markers: Vec::new(),
+            timeline: None,
                 splits: Vec::new(),
                 act_spans: Vec::new(),
                 dividers: None,
