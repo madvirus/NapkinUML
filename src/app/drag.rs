@@ -350,6 +350,14 @@ impl UmlApp {
 
     fn update_resize(&mut self, id: u64, corner: usize, orig: (f32, f32, f32, f32), start: (f32, f32), dp: (f32, f32)) {
         let (x, y, w, h) = resize_rect(corner, orig, (dp.0 - start.0, dp.1 - start.1), |v| self.snapv(v));
+        // a timeline axis made longer or shorter carries its events along in proportion
+        if let Some(dm) = self.diag_mut() {
+            if let Some(mut a) = dm.shape(id).filter(|s| s.kind == ShapeKind::TimeAxis).cloned() {
+                (a.x, a.y, a.w, a.h) = (x, y, w, h);
+                crate::model::stretch_time_axis(dm, a);
+                return;
+            }
+        }
         if let Some(s) = self.diag_mut().and_then(|dm| dm.shape_mut(id)) {
             s.x = x;
             s.y = y;

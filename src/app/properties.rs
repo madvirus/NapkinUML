@@ -683,6 +683,9 @@ impl UmlApp {
             if let Some(dm) = self.diag_mut() {
                 if turned {
                     crate::model::turn_time_axis(dm, s, |e| render::min_size(&fit.0, e, &fit.1, &fit.2).x);
+                } else if s.kind == ShapeKind::TimeAxis {
+                    // a longer or shorter axis carries its events along in proportion
+                    crate::model::stretch_time_axis(dm, s);
                 } else if let Some(t) = dm.shape_mut(s.id) {
                     *t = s;
                 }

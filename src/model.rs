@@ -731,6 +731,42 @@ pub fn turn_time_axis(d: &mut Diagram, axis: Shape, fit: impl Fn(&Shape) -> f32)
     }
 }
 
+/// Put `axis` (a timeline axis made longer or shorter, by its handles or W/H) in place of the
+/// one with its id, and move every event whose line went to the old one along it so it keeps
+/// its share of the length (its distance from the axis stays). A move without a change of
+/// length, or a turn, leaves the events where they are.
+pub fn stretch_time_axis(d: &mut Diagram, axis: Shape) {
+    if let Some(old) = d.shape(axis.id).cloned() {
+        let (ot, nt) = (old.timeline(), axis.timeline());
+        let vert = nt.vertical;
+        let (o0, ol, n0, nl) = if vert { (old.y, old.h, axis.y, axis.h) } else { (old.x, old.w, axis.x, axis.w) };
+        if ot.vertical == vert && ol > 0.0 && (ol - nl).abs() > 1e-3 {
+            let moves: Vec<(u64, f32)> = d
+                .shapes
+                .iter()
+                .filter(|e| e.kind == ShapeKind::TimeEvent)
+                .filter_map(|e| {
+                    let (aid, ((ax, ay), _, _)) = stem_to(d, e)?;
+                    let along = if vert { ay } else { ax };
+                    (aid == old.id).then(|| (e.id, n0 + (along - o0) / ol * nl - along))
+                })
+                .collect();
+            for (id, delta) in moves {
+                if let Some(e) = d.shape_mut(id) {
+                    if vert {
+                        e.y += delta;
+                    } else {
+                        e.x += delta;
+                    }
+                }
+            }
+        }
+    }
+    if let Some(a) = d.shape_mut(axis.id) {
+        *a = axis;
+    }
+}
+
 /// How a marker is drawn.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum MarkerLook {
@@ -2016,6 +2052,22 @@ mod tests {
         turn(&mut d);
         assert_eq!((d.shapes[1].x, d.shapes[1].y), (100.0, 20.0));
         assert_eq!((d.shapes[2].x, d.shapes[2].y), (400.0, 200.0));
+    }
+
+    #[test]
+    fn stretching_an_axis_carries_its_events() {
+        let mut d = diagram(DiagramKind::Timeline, vec![]);
+        let mut axis = Shape::new(1, ShapeKind::TimeAxis, 0.0, 100.0, 800.0, 30.0);
+        axis.timeline = Some(Timeline { start: 2020.0, end: 2030.0, step: 1.0, style: AXIS_LINE, vertical: false });
+        d.shapes.push(axis.clone());
+        d.shapes.push(Shape::new(2, ShapeKind::TimeEvent, 100.0, 20.0, 100.0, 30.0));
+        // twice as long from its left end: the event's middle goes from 150 to 300
+        stretch_time_axis(&mut d, Shape { w: 1600.0, ..axis.clone() });
+        assert_eq!((d.shapes[1].x, d.shapes[1].y), (250.0, 20.0));
+        assert_eq!(d.shapes[0].w, 1600.0);
+        // moved without a change of length: the event stays
+        stretch_time_axis(&mut d, Shape { x: 50.0, w: 1600.0, ..axis.clone() });
+        assert_eq!(d.shapes[1].x, 250.0);
     }
 
     #[test]
