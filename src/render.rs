@@ -545,6 +545,20 @@ fn text_at(painter: &Painter, look: &Look, pos: Pos2, align: Align2, text: &str,
     if look.icon || text.is_empty() {
         return Rect::from_min_size(pos, Vec2::ZERO);
     }
+    if text.contains('\n') && align.x() == egui::Align::Center {
+        // a name with line breaks (a network device's): each line centred under the one before
+        let galleys: Vec<_> = text.split('\n').map(|l| painter.layout_no_wrap(l.to_string(), font.clone(), color)).collect();
+        let w = galleys.iter().map(|g| g.size().x).fold(0.0, f32::max);
+        let h: f32 = galleys.iter().map(|g| g.size().y).sum();
+        let block = align.anchor_size(pos, Vec2::new(w, h));
+        let mut y = block.top();
+        for g in galleys {
+            let size = g.size();
+            painter.galley(Pos2::new(block.center().x - size.x / 2.0, y), g, color);
+            y += size.y;
+        }
+        return block;
+    }
     painter.text(pos, align, text, font, color)
 }
 
@@ -1762,7 +1776,9 @@ pub fn diagram_bounds(d: &crate::model::Diagram) -> Option<(Pos2, Pos2)> {
     };
     for s in &d.shapes {
         take(s.x - 10.0, s.y - 30.0);
-        take(s.x + s.w + 30.0, s.y + s.h + 24.0);
+        // a name below a shape may have several lines
+        let below = if has_name_below(s.kind) { 16.0 * s.name.matches('\n').count() as f32 } else { 0.0 };
+        take(s.x + s.w + 30.0, s.y + s.h + 24.0 + below);
     }
     for c in &d.connectors {
         for (x, y) in &c.points {

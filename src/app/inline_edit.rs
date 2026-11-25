@@ -337,7 +337,7 @@ impl UmlApp {
                     return (r.left_top(), r.width().max(160.0), true, true);
                 }
                 // a mind map topic's name may take line breaks (Shift+Enter)
-                (Pos2::new(r.center().x - w / 2.0, y), w, s.kind == ShapeKind::Note || s.kind.is_topic(), false)
+                (Pos2::new(r.center().x - w / 2.0, y), w, s.kind == ShapeKind::Note || s.kind.multiline_name(), false)
             }),
             (EditTarget::Conn(id), _) => d.connectors.iter().find(|c| c.id == id).and_then(|c| {
                 let (a, b) = (d.shape(c.from)?, d.shape(c.to)?);
@@ -358,8 +358,8 @@ impl UmlApp {
             None if guard.is_some() => tr(self.settings.language, "guard"),
             None => "",
         };
-        // a topic's name: Shift+Enter breaks the line, Enter alone finishes (as a one-line name does)
-        let topic_name = line.is_none() && part.is_none() && guard.is_none() && matches!(target, EditTarget::Shape(id) if d.shape(id).map(|s| s.kind.is_topic()).unwrap_or(false));
+        // a topic's (or a network shape's) name: Shift+Enter breaks the line, Enter alone finishes (as a one-line name does)
+        let topic_name = line.is_none() && part.is_none() && guard.is_none() && matches!(target, EditTarget::Shape(id) if d.shape(id).map(|s| s.kind.multiline_name()).unwrap_or(false));
         let mut commit = false;
         let mut cancel = false;
         let ed = self.editing.as_mut().unwrap();

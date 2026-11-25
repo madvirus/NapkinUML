@@ -232,8 +232,8 @@ impl UmlApp {
             ui.label(tr(lang, if s.kind == ShapeKind::Text { "Text" } else { "Name" }));
             let te = if multi {
                 egui::TextEdit::multiline(&mut s.name).desired_rows(4).desired_width(f32::INFINITY)
-            } else if s.kind.is_topic() {
-                // a mind map topic's name may have line breaks: the box grows with them (Shift+Enter adds one)
+            } else if s.kind.multiline_name() {
+                // a mind map topic's (or a network shape's) name may have line breaks: the box grows with them (Shift+Enter adds one)
                 egui::TextEdit::multiline(&mut s.name).desired_rows(1).desired_width(f32::INFINITY).return_key(egui::KeyboardShortcut::new(egui::Modifiers::SHIFT, egui::Key::Enter))
             } else {
                 egui::TextEdit::singleline(&mut s.name).desired_width(f32::INFINITY)

@@ -64,7 +64,7 @@ impl DiagramKind {
             DiagramKind::Object => "Shows instances of classes and the links between them at one moment.",
             DiagramKind::Package => "Shows packages and the dependencies, imports and merges between them.",
             DiagramKind::Erd => "Shows database tables, their columns and the relationships between them.",
-            DiagramKind::Network => "Shows network devices (routers, switches, firewalls, servers, PCs, phones...), the network zones they sit in and how they are connected.",
+            DiagramKind::Network => "Shows network devices (routers, switches, firewalls, servers, PCs, phones...), the network zones they sit in and how they are connected. A name may take several lines: Shift+Enter breaks the line.",
             DiagramKind::MindMap => "Shows one central topic with the ideas that branch out of it, and their sub-ideas. Right-click a topic (or use the Properties pane) to put markers on it: a colour tag, a priority, task progress and symbols. Select a topic and press Tab to add a sub-topic, Enter to add a sibling topic (or click Add Sub-topic / Add Topic at the bottom of the palette, or in the topic's right-click menu). The central topic picks the structure (mind map, logic chart or org chart); topics are placed automatically, and a dragged topic joins the topic it is dropped next to. The small circle beside a topic (or Ctrl+/) folds and unfolds its sub-topics. While typing a topic's name, Shift+Enter starts a new line. A topic's shape (capsule, rounded box or underline), border colour and border line (solid, dashed or none) are set in its properties.",
         }
     }
@@ -237,6 +237,12 @@ impl ShapeKind {
 
     pub fn is_swimlane(self) -> bool {
         matches!(self, ShapeKind::VerticalSwimlane | ShapeKind::HorizontalSwimlane)
+    }
+
+    /// Shapes whose name may have line breaks typed with Shift+Enter (Enter alone finishes): mind
+    /// map topics and everything on a network diagram (devices, clouds, zones).
+    pub fn multiline_name(self) -> bool {
+        self.is_topic() || self.is_network_device() || matches!(self, ShapeKind::Cloud | ShapeKind::NetworkZone)
     }
 
     /// Network device pictures (name drawn below them).
