@@ -23,8 +23,28 @@ UML 9종:
 * ER 다이어그램
 * 네트워크 다이어그램
 * 마인드맵
+* 타임라인 다이어그램
 
+*클래스 다이어그램*
 ![class diagram](docs/napkinuml-shot.png)
+
+*시퀀스 다이어그램*
+![state diagram](docs/napkinuml-sequence.png)
+
+*액티비티 다이어그램*
+![state diagram](docs/napkinuml-activity.png)
+
+*스테이트 머신 다이어그램*
+![state diagram](docs/napkinuml-state.png)
+
+*타임라인*
+![timeline diagram](docs/napkinuml-timeline.png)
+
+*네트워크 다이어그램*
+![timeline diagram](docs/napkinuml-networkd.png)
+
+*마인드맵*
+![timeline diagram](docs/napkinuml-mindmap.png)
 
 ## 실험 기능: AI 어시스턴스
 로컬에 설치한 AI 에이전트를 이용해서 다이어그램 제작을 도움 받을 수 있습니다.
