@@ -136,6 +136,9 @@ impl Look {
             // a timeline's band (soft orange) and milestones (purple)
             TimeAxis => (255, 214, 170),
             TimeMilestone => (156, 77, 244),
+            // relationship diagrams: warm pale nodes in a pale blue-grey group
+            RelRounded | RelBox | RelCircle => (255, 243, 220),
+            RelGroup => (236, 241, 249),
             Constraint | System | AltFragment | LoopFragment | Actor | ActorLifeline | VerticalSwimlane | HorizontalSwimlane | NetworkZone => (self.bg.r(), self.bg.g(), self.bg.b()),
             // network pictures get soft colours of their own
             Firewall | WebFirewall => (254, 222, 212),
@@ -269,6 +272,18 @@ pub fn min_size(ctx: &egui::Context, shape: &Shape, opts: &ProjectOptions, look:
                 Vec2::new(w + pad, h + 8.0)
             }
         }
+        // a relationship node or group: its lines (a node with a picture has its name below)
+        RelRounded | RelBox | RelCircle | RelGroup => {
+            let lines: Vec<&str> = shape.name.split('\n').collect();
+            let w = lines.iter().map(|l| text_width(ctx, l, ts)).fold(0.0, f32::max);
+            let h = lines.len().max(1) as f32 * lh;
+            match shape.kind {
+                RelGroup => Vec2::new(w + 40.0, h + 30.0),
+                _ if shape.image.is_some() => Vec2::new(24.0, 24.0),
+                RelCircle => Vec2::new(w * 1.25 + 14.0, h * 1.5 + 12.0),
+                _ => Vec2::new(w + 24.0, h + 14.0),
+            }
+        }
         // a topic's name may have line breaks: as wide as its longest line, as tall as its lines
         CentralTopic | Topic => {
             let k = if shape.kind == CentralTopic { 1.2 } else { 1.0 };
@@ -286,6 +301,56 @@ pub fn min_size(ctx: &egui::Context, shape: &Shape, opts: &ProjectOptions, look:
 }
 
 /// The outline of a rounded rectangle as a closed list of points.
+/// A relationship node's outline on screen, clockwise and not closed: an ellipse, a rounded box
+/// or a box.
+fn rel_outline(kind: ShapeKind, r: Rect, z: f32) -> Vec<Pos2> {
+    match kind {
+        ShapeKind::RelCircle => ellipse_points(r.center(), r.width() / 2.0, r.height() / 2.0, 72),
+        ShapeKind::RelRounded => {
+            let mut v = rounded_rect_points(r, 10.0 * z);
+            v.pop();
+            v
+        }
+        _ => vec![r.left_top(), r.right_top(), r.right_bottom(), r.left_bottom()],
+    }
+}
+
+/// A picture kept in a shape (`Shape::image`) as a texture of this context: read once, then
+/// kept (None when it can't be read).
+pub fn picture_texture(ctx: &egui::Context, data: &str) -> Option<egui::TextureHandle> {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    data.hash(&mut h);
+    let key = h.finish();
+    let id = egui::Id::new(("node-picture", key));
+    if let Some(t) = ctx.data(|d| d.get_temp::<Option<egui::TextureHandle>>(id)) {
+        return t;
+    }
+    let tex = crate::picture::pixels(data).map(|(size, px)| ctx.load_texture(format!("node-picture-{key:x}"), egui::ColorImage::from_rgba_unmultiplied(size, &px), egui::TextureOptions::LINEAR));
+    ctx.data_mut(|d| d.insert_temp(id, tex.clone()));
+    tex
+}
+
+/// Fill a convex outline around `r` with a picture, cropped to cover `r` without stretching.
+fn picture_in(painter: &Painter, pts: &[Pos2], r: Rect, tex: &egui::TextureHandle) {
+    let [iw, ih] = tex.size();
+    let (ia, ra) = (iw as f32 / ih.max(1) as f32, r.width() / r.height().max(0.01));
+    let (uw, vh) = if ia > ra { (ra / ia, 1.0) } else { (1.0, ia / ra) };
+    let (u0, v0) = ((1.0 - uw) / 2.0, (1.0 - vh) / 2.0);
+    let uv = |p: Pos2| Pos2::new(u0 + (p.x - r.left()) / r.width().max(0.01) * uw, v0 + (p.y - r.top()) / r.height().max(0.01) * vh);
+    let mut mesh = epaint::Mesh::with_texture(tex.id());
+    let c = r.center();
+    mesh.vertices.push(epaint::Vertex { pos: c, uv: uv(c), color: Color32::WHITE });
+    for p in pts {
+        mesh.vertices.push(epaint::Vertex { pos: *p, uv: uv(*p), color: Color32::WHITE });
+    }
+    let n = pts.len() as u32;
+    for i in 0..n {
+        mesh.add_triangle(0, 1 + i, 1 + (i + 1) % n);
+    }
+    painter.add(epaint::Shape::mesh(mesh));
+}
+
 fn rounded_rect_points(r: Rect, rad: f32) -> Vec<Pos2> {
     let rad = rad.min(r.width() / 2.0).min(r.height() / 2.0);
     let mut v = vec![];
@@ -1196,6 +1261,44 @@ pub fn draw_shape(painter: &Painter, cam: &Cam, shape: &Shape, look: &Look, opts
             let tr = topic_markers(painter, look, tr, shape, &tf);
             centered_lines(painter, look, tr, &shape.name, tf, tc);
         }
+        RelRounded | RelBox | RelCircle => {
+            // a node: its outline (solid, dashed or none, in its colour), filled with its picture
+            // (its name then below it) or its colour (its name inside)
+            let col = shape.border_color.map(|c| Color32::from_rgba_unmultiplied(c[0], c[1], c[2], c[3])).unwrap_or(line);
+            let style = shape.border_style.unwrap_or(crate::model::BORDER_SOLID);
+            let mut pts = rel_outline(shape.kind, r, z);
+            match shape.image.as_deref().and_then(|d| picture_texture(painter.ctx(), d)) {
+                Some(t) => picture_in(painter, &pts, r, &t),
+                None => {
+                    painter.add(epaint::Shape::convex_polygon(pts.clone(), fill, Stroke::NONE));
+                }
+            }
+            pts.push(pts[0]);
+            topic_outline(painter, &pts, Stroke::new(stroke.width, col), style, z);
+            if shape.image.is_some() {
+                if !look.icon {
+                    name_below(painter);
+                }
+            } else {
+                let inner = if shape.kind == RelCircle { r.shrink2(r.size() * 0.1) } else { r };
+                centered_lines(painter, look, inner, &shape.name, f.clone(), tc);
+            }
+        }
+        RelGroup => {
+            // a group: a rounded area, its label on a darker badge in its top-left corner
+            let col = shape.border_color.map(|c| Color32::from_rgba_unmultiplied(c[0], c[1], c[2], c[3])).unwrap_or(line);
+            let style = shape.border_style.unwrap_or(crate::model::BORDER_SOLID);
+            let rad = 10.0 * z;
+            painter.rect_filled(r, rad.min(r.height() / 2.0).min(r.width() / 2.0), fill);
+            topic_outline(painter, &rounded_rect_points(r, rad), Stroke::new(stroke.width, col), style, z);
+            if !look.icon && !shape.name.is_empty() {
+                let g = painter.layout_no_wrap(shape.name.clone(), f.clone(), tc);
+                let badge = Rect::from_min_size(r.min + Vec2::splat(6.0 * z), g.size() + Vec2::new(14.0 * z, 6.0 * z)).intersect(r);
+                let k = |v: u8| (v as f32 * 0.88) as u8;
+                painter.rect_filled(badge, 4.0 * z, Color32::from_rgb(k(fill.r()), k(fill.g()), k(fill.b())));
+                painter.galley(Pos2::new(badge.left() + 7.0 * z, badge.top() + 3.0 * z), g, tc);
+            }
+        }
         NetworkZone => {
             let rad = 8.0 * z;
             painter.rect_filled(r, rad, fill);
@@ -1407,7 +1510,7 @@ pub fn handle_points(cam: &Cam, shape: &Shape) -> [Pos2; 4] {
 
 fn is_round(kind: ShapeKind) -> bool {
     use ShapeKind::*;
-    matches!(kind, UseCase | Collaboration | ProvidedInterface | RequiredInterface | Initial | Final | ActivityFinal | FlowFinal | Junction | ShallowHistory | DeepHistory | EntryPoint | ExitPoint)
+    matches!(kind, UseCase | Collaboration | RelCircle | ProvidedInterface | RequiredInterface | Initial | Final | ActivityFinal | FlowFinal | Junction | ShallowHistory | DeepHistory | EntryPoint | ExitPoint)
 }
 
 /// The point where a line from the shape's centre toward `to` leaves the shape.
@@ -1961,7 +2064,7 @@ pub fn has_name_below(k: ShapeKind) -> bool {
 
 /// The screen rectangle of a shape's name drawn below it, if it has one.
 pub fn name_below_rect(painter: &Painter, cam: &Cam, shape: &Shape, look: &Look) -> Option<Rect> {
-    if !has_name_below(shape.kind) || shape.name.is_empty() {
+    if !(has_name_below(shape.kind) || shape.picture_below()) || shape.name.is_empty() {
         return None;
     }
     let look = shape_look(shape, look);
@@ -1989,7 +2092,7 @@ pub fn diagram_bounds(d: &crate::model::Diagram) -> Option<(Pos2, Pos2)> {
     for s in &d.shapes {
         take(s.x - 10.0, s.y - 30.0);
         // a name below a shape may have several lines
-        let below = if has_name_below(s.kind) { 16.0 * s.name.matches('\n').count() as f32 } else { 0.0 };
+        let below = if has_name_below(s.kind) || s.picture_below() { 16.0 * s.name.matches('\n').count() as f32 } else { 0.0 };
         take(s.x + s.w + 30.0, s.y + s.h + 24.0 + below);
     }
     for c in &d.connectors {
@@ -2082,7 +2185,7 @@ pub fn draw_fold_knobs(painter: &Painter, cam: &Cam, d: &crate::model::Diagram, 
 /// A network device's name drawn again on top of the lines, on a small patch of the
 /// background, so a line leaving the device downwards doesn't strike through it.
 pub fn device_name_over_lines(painter: &Painter, cam: &Cam, shape: &Shape, look: &Look) {
-    if !shape.kind.is_network_device() {
+    if !(shape.kind.is_network_device() || shape.picture_below()) {
         return;
     }
     let Some(rect) = name_below_rect(painter, cam, shape, look) else { return };
@@ -2264,6 +2367,7 @@ pub fn draw_icon(painter: &Painter, rect: Rect, tool: Tool, look: &Look, opts: &
             border_style: None,
             markers: Vec::new(),
             timeline: None,
+            image: None,
                 splits: Vec::new(),
                 act_spans: Vec::new(),
                 dividers: None,

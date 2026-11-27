@@ -12,7 +12,7 @@ pub fn net_pick_source(kind: ShapeKind) -> bool {
 /// Containers whose empty area a line can be released on to Connect and Create (the new shape
 /// lands inside): swimlanes, network zones and a use case diagram's System.
 pub fn counts_as_empty(kind: ShapeKind) -> bool {
-    kind.is_swimlane() || matches!(kind, ShapeKind::NetworkZone | ShapeKind::System)
+    kind.is_swimlane() || matches!(kind, ShapeKind::NetworkZone | ShapeKind::System | ShapeKind::RelGroup)
 }
 
 /// Whether a line of this kind from a shape of this kind starts Connect and Create, and the shape
@@ -20,6 +20,10 @@ pub fn counts_as_empty(kind: ShapeKind) -> bool {
 pub fn pick_default(diagram: DiagramKind, conn: ConnKind, shape: ShapeKind) -> Option<ShapeKind> {
     if diagram == DiagramKind::Network {
         return (matches!(conn, ConnKind::Link | ConnKind::Wireless) && net_pick_source(shape)).then_some(shape);
+    }
+    // Relationship diagrams: a line from a node makes a node of the same outline
+    if diagram == DiagramKind::Relationship {
+        return (conn.is_rel() && shape.is_rel_node()).then_some(shape);
     }
     // Use Case diagrams: an Association or Dependency from an Actor makes a Use Case
     if diagram == DiagramKind::UseCase {
@@ -40,7 +44,7 @@ pub fn pick_choices(diagram: DiagramKind, _conn: ConnKind, source: ShapeKind) ->
         .into_iter()
         .filter_map(|e| if let Tool::Shape(k) = e.tool { Some((k, e.label)) } else { None })
         .filter(|(k, _)| {
-            !matches!(k, K::Note | K::Text | K::Constraint | K::AltFragment | K::LoopFragment | K::NetworkZone | K::Port | K::Initial)
+            !matches!(k, K::Note | K::Text | K::Constraint | K::AltFragment | K::LoopFragment | K::NetworkZone | K::RelGroup | K::Port | K::Initial)
                 && !k.is_swimlane()
                 && (!erd || matches!(k, K::Entity | K::DbView))
                 && (!actor || *k == K::UseCase)
@@ -115,6 +119,8 @@ mod tests {
         assert_eq!(pick_default(DiagramKind::UseCase, ConnKind::Association, K::Actor), Some(K::UseCase));
         assert_eq!(pick_default(DiagramKind::UseCase, ConnKind::Association, K::UseCase), None);
         assert_eq!(pick_default(DiagramKind::Class, ConnKind::Generalization, K::Class), Some(K::Class));
+        assert_eq!(pick_default(DiagramKind::Relationship, ConnKind::RelArrow, K::RelCircle), Some(K::RelCircle));
+        assert_eq!(pick_default(DiagramKind::Relationship, ConnKind::RelLine, K::RelGroup), None);
     }
 
     #[test]

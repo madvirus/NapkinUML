@@ -226,6 +226,8 @@ impl UmlApp {
         let mut field_changed: Option<u8> = None;
         // a timeline axis turned between across and down: its events move with it
         let mut turned = false;
+        // a picture file that couldn't be read
+        let mut picture_error: Option<String> = None;
         ui.label(egui::RichText::new(palette::label_for(d.kind, Tool::Shape(s.kind))).strong());
         ui.add_space(4.0);
         egui::Grid::new("shape_props").num_columns(2).spacing([8.0, 6.0]).show(ui, |ui| {
@@ -395,7 +397,7 @@ impl UmlApp {
             }
             if d.kind == DiagramKind::MindMap && s.kind.is_topic() {
                 // the topic's outline: shape, colour and line
-                use crate::model::{BORDER_STYLES, TOPIC_SHAPES};
+                use crate::model::TOPIC_SHAPES;
                 let own = Shape::new(0, s.kind, 0.0, 0.0, 0.0, 0.0).topic_look();
                 let cur = s.topic_look();
                 ui.label(tr(lang, "Topic Shape"));
@@ -409,6 +411,10 @@ impl UmlApp {
                     }
                 });
                 ui.end_row();
+            }
+            if (d.kind == DiagramKind::MindMap && s.kind.is_topic()) || s.kind.is_rel_node() || s.kind == ShapeKind::RelGroup {
+                // the outline's colour and line (topics, relationship nodes and groups)
+                use crate::model::BORDER_STYLES;
                 ui.label(tr(lang, "Border color"));
                 ui.horizontal(|ui| {
                     let mut def = s.border_color.is_none();
@@ -478,6 +484,48 @@ impl UmlApp {
                     s.timeline = Some(t);
                     field_changed = Some(23);
                 }
+            }
+            if s.kind.is_rel_node() {
+                // a relationship node: its outline and its picture
+                use crate::model::REL_NODES;
+                ui.label(tr(lang, "Node Shape"));
+                egui::ComboBox::from_id_salt("rel_node_shape").selected_text(tr(lang, REL_NODES.iter().find(|(k, _)| *k == s.kind).map(|(_, l)| *l).unwrap_or(""))).show_ui(ui, |ui| {
+                    for (k, l) in REL_NODES {
+                        if ui.selectable_label(s.kind == k, tr(lang, l)).clicked() && s.kind != k {
+                            if k == ShapeKind::RelCircle {
+                                // a circle, not an oval
+                                let side = ((s.w + s.h) / 2.0).max(40.0);
+                                (s.w, s.h) = (side, side);
+                            }
+                            s.kind = k;
+                            field_changed = Some(26);
+                        }
+                    }
+                });
+                ui.end_row();
+                ui.label(tr(lang, "Picture"));
+                ui.horizontal(|ui| {
+                    if ui.button(tr(lang, "Choose Picture...")).clicked() {
+                        if let Some(p) = rfd::FileDialog::new().add_filter("Pictures", &["png", "jpg", "jpeg", "webp"]).pick_file() {
+                            match crate::picture::from_file(&p) {
+                                Ok(data) => {
+                                    // a box takes the picture's proportions (a circle stays round)
+                                    if let Some(([iw, ih], _)) = crate::picture::pixels(&data).filter(|_| s.kind != ShapeKind::RelCircle) {
+                                        s.h = (s.w * ih as f32 / iw.max(1) as f32).clamp(40.0, 240.0);
+                                    }
+                                    s.image = Some(data);
+                                    field_changed = Some(27);
+                                }
+                                Err(e) => picture_error = Some(e),
+                            }
+                        }
+                    }
+                    if s.image.is_some() && ui.button(tr(lang, "Remove Picture")).clicked() {
+                        s.image = None;
+                        field_changed = Some(27);
+                    }
+                });
+                ui.end_row();
             }
             if s.kind == ShapeKind::TimeEvent {
                 use crate::model::MARK_STYLES;
@@ -636,7 +684,7 @@ impl UmlApp {
                 return;
             }
         }
-        if render::has_name_below(s.kind) && s.label_offset != (0.0, 0.0) && ui.button(tr(lang, "Reset Name Position")).clicked() {
+        if (render::has_name_below(s.kind) || s.picture_below()) && s.label_offset != (0.0, 0.0) && ui.button(tr(lang, "Reset Name Position")).clicked() {
             s.label_offset = (0.0, 0.0);
             field_changed = Some(13);
         }
@@ -668,6 +716,9 @@ impl UmlApp {
         ui.label(tr(lang, "Documentation"));
         if ui.add(egui::TextEdit::multiline(&mut s.documentation).desired_rows(4).desired_width(f32::INFINITY)).changed() {
             field_changed = Some(8);
+        }
+        if let Some(e) = picture_error {
+            self.status = format!("{}: {e}", tr(lang, "The picture could not be read"));
         }
         if let Some(f) = field_changed {
             if f == 9 {

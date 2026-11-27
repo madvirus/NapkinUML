@@ -281,10 +281,10 @@ impl UmlApp {
     pub(super) fn navigator_by_type(&mut self, ui: &mut egui::Ui, project: &Project) {
         let lang = self.settings.language;
         let groups: [(&str, Vec<DiagramKind>); 4] = [
-            ("UML Diagrams", DiagramKind::ALL.iter().copied().filter(|k| !matches!(k, DiagramKind::Erd | DiagramKind::Network | DiagramKind::MindMap | DiagramKind::Timeline)).collect()),
+            ("UML Diagrams", DiagramKind::ALL.iter().copied().filter(|k| !matches!(k, DiagramKind::Erd | DiagramKind::Network | DiagramKind::MindMap | DiagramKind::Timeline | DiagramKind::Relationship)).collect()),
             ("Database Modeling", vec![DiagramKind::Erd]),
             ("Network", vec![DiagramKind::Network]),
-            ("General Purpose", vec![DiagramKind::MindMap, DiagramKind::Timeline]),
+            ("General Purpose", vec![DiagramKind::MindMap, DiagramKind::Timeline, DiagramKind::Relationship]),
         ];
         let mut rows: Vec<TreeRow> = vec![];
         let root = TreeKey::Root(1);

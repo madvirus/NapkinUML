@@ -17,10 +17,11 @@ pub enum DiagramKind {
     Network,
     MindMap,
     Timeline,
+    Relationship,
 }
 
 impl DiagramKind {
-    pub const ALL: [DiagramKind; 13] = [
+    pub const ALL: [DiagramKind; 14] = [
         DiagramKind::Class,
         DiagramKind::Component,
         DiagramKind::Deployment,
@@ -34,6 +35,7 @@ impl DiagramKind {
         DiagramKind::Network,
         DiagramKind::MindMap,
         DiagramKind::Timeline,
+        DiagramKind::Relationship,
     ];
 
     pub fn label(self) -> &'static str {
@@ -51,6 +53,7 @@ impl DiagramKind {
             DiagramKind::Network => "Network Diagram",
             DiagramKind::MindMap => "Mind Map Diagram",
             DiagramKind::Timeline => "Timeline Diagram",
+            DiagramKind::Relationship => "Relationship Diagram",
         }
     }
 
@@ -69,6 +72,7 @@ impl DiagramKind {
             DiagramKind::Erd => "Shows database tables, their columns and the relationships between them.",
             DiagramKind::Network => "Shows network devices (routers, switches, firewalls, servers, PCs, phones...), the network zones they sit in and how they are connected. A name may take several lines: Shift+Enter breaks the line.",
             DiagramKind::Timeline => "Shows events along a time axis, drawn across or down the page. The axis takes its tick labels one per line (an empty line is a tick without a label, so Jan 2021, Jul 2021... or anything else), its direction and its look (a line with ticks, a band or a row of chevrons). Each event is a label whose line drops to the axis at the place it stands over, ending in a flag, a dot, a pin, a milestone diamond on the axis or nothing; drag an event along the axis to move it, or away from it to lengthen its line. Names may take several lines (Shift+Enter).",
+            DiagramKind::Relationship => "Shows people, places or things and how they are related: a family tree, the cast of a story, or the suspects and witnesses of a case. Nodes are rounded boxes, boxes or circles (switch in the Properties pane), and any node can show a picture (Properties > Choose Picture...; the name then goes below it). Lines between them are plain, dashed, arrows, dashed arrows or two-way arrows, with a label. A Group is a labelled area that holds nodes and moves with them. Names may take several lines (Shift+Enter).",
             DiagramKind::MindMap => "Shows one central topic with the ideas that branch out of it, and their sub-ideas. Right-click a topic (or use the Properties pane) to put markers on it: a colour tag, a priority, task progress and symbols. Select a topic and press Tab to add a sub-topic, Enter to add a sibling topic (or click Add Sub-topic / Add Topic at the bottom of the palette, or in the topic's right-click menu). The central topic picks the structure (mind map, logic chart or org chart); topics are placed automatically, and a dragged topic joins the topic it is dropped next to. The small circle beside a topic (or Ctrl+/) folds and unfolds its sub-topics. While typing a topic's name, Shift+Enter starts a new line. A topic's shape (capsule, rounded box or underline), border colour and border line (solid, dashed or none) are set in its properties.",
         }
     }
@@ -162,6 +166,13 @@ pub enum ShapeKind {
     TimeEvent,
     /// A circle on a timeline's axis with its name inside.
     TimeMilestone,
+    /// A relationship diagram's nodes: a rounded box, a box or a circle, with a name and
+    /// optionally a picture (`Shape::image`, the name then goes below).
+    RelRounded,
+    RelBox,
+    RelCircle,
+    /// A relationship diagram's group: a labelled area holding nodes.
+    RelGroup,
 }
 
 impl ShapeKind {
@@ -224,6 +235,9 @@ impl ShapeKind {
             TimeAxis => (720.0, 30.0),
             TimeEvent => (150.0, 34.0),
             TimeMilestone => (70.0, 70.0),
+            RelRounded | RelBox => (130.0, 50.0),
+            RelCircle => (80.0, 80.0),
+            RelGroup => (320.0, 220.0),
         }
     }
 
@@ -245,6 +259,7 @@ impl ShapeKind {
                 | VerticalSwimlane
                 | HorizontalSwimlane
                 | NetworkZone
+                | RelGroup
         )
     }
 
@@ -255,7 +270,7 @@ impl ShapeKind {
     /// Shapes whose name may have line breaks typed with Shift+Enter (Enter alone finishes): mind
     /// map topics and everything on a network diagram (devices, clouds, zones).
     pub fn multiline_name(self) -> bool {
-        self.is_topic() || self.is_network_device() || matches!(self, ShapeKind::Cloud | ShapeKind::NetworkZone | ShapeKind::TimeEvent | ShapeKind::TimeMilestone)
+        self.is_topic() || self.is_network_device() || matches!(self, ShapeKind::Cloud | ShapeKind::NetworkZone | ShapeKind::TimeEvent | ShapeKind::TimeMilestone | ShapeKind::RelGroup) || self.is_rel_node()
     }
 
     /// Network device pictures (name drawn below them).
@@ -385,6 +400,12 @@ pub enum ConnKind {
     Wireless,
     /// A mind map branch from a topic to one of its sub-topics (drawn as a smooth curve).
     Branch,
+    /// Relationship diagram lines: plain, dashed, an arrow, a dashed arrow, arrows both ways.
+    RelLine,
+    RelDashed,
+    RelArrow,
+    RelDashedArrow,
+    RelTwoWay,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -415,6 +436,11 @@ impl ConnKind {
             Association | Link => s(false, End::None, End::None, None),
             Wireless => s(true, End::None, End::None, None),
             Branch => s(false, End::None, End::None, None),
+            RelLine => s(false, End::None, End::None, None),
+            RelDashed => s(true, End::None, End::None, None),
+            RelArrow => s(false, End::None, End::FilledArrow, None),
+            RelDashedArrow => s(true, End::None, End::FilledArrow, None),
+            RelTwoWay => s(false, End::FilledArrow, End::FilledArrow, None),
             Aggregation => s(false, End::HollowDiamond, End::None, None),
             Composition => s(false, End::FilledDiamond, End::None, None),
             Generalization => s(false, End::None, End::Triangle, None),
@@ -447,6 +473,12 @@ impl ConnKind {
         matches!(self, Message | AsyncMessage | ReturnMessage | CreateMessage)
     }
 
+    /// Relationship diagram lines.
+    pub fn is_rel(self) -> bool {
+        use ConnKind::*;
+        matches!(self, RelLine | RelDashed | RelArrow | RelDashedArrow | RelTwoWay)
+    }
+
     pub fn is_erd(self) -> bool {
         use ConnKind::*;
         matches!(self, OneToOne | OneToMany | ManyToOne | ManyToMany)
@@ -468,6 +500,11 @@ impl ShapeKind {
     /// Mind map topics (the central topic and the ones branching off it).
     pub fn is_topic(self) -> bool {
         matches!(self, ShapeKind::CentralTopic | ShapeKind::Topic)
+    }
+
+    /// A relationship diagram's nodes (not its groups).
+    pub fn is_rel_node(self) -> bool {
+        matches!(self, ShapeKind::RelRounded | ShapeKind::RelBox | ShapeKind::RelCircle)
     }
 }
 
@@ -578,6 +615,9 @@ pub struct Shape {
     /// `Shape::timeline`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub timeline: Option<Timeline>,
+    /// A relationship node's picture: PNG as base64 text (`picture`), shown filling the node.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub image: Option<String>,
 }
 
 /// A timeline axis: the period it spans (`start` at its left or top end, `end` at the other),
@@ -870,6 +910,9 @@ pub const BORDER_DASHED: u8 = 1;
 pub const BORDER_NONE: u8 = 2;
 pub const BORDER_STYLES: [(u8, &str); 3] = [(BORDER_SOLID, "Solid"), (BORDER_DASHED, "Dashed"), (BORDER_NONE, "None")];
 
+/// A relationship node's outlines, as Properties offers them.
+pub const REL_NODES: [(ShapeKind, &str); 3] = [(ShapeKind::RelRounded, "Rounded Box"), (ShapeKind::RelBox, "Box"), (ShapeKind::RelCircle, "Circle")];
+
 /// What a folded mind map topic keeps: the shapes below it and every line touching them.
 #[derive(Serialize, Deserialize, Clone, Debug, Default)]
 pub struct Fold {
@@ -1002,6 +1045,11 @@ impl Shape {
         (0..=n).map(|i| time_label(t.start + i as f64 * t.step, t.step)).collect()
     }
 
+    /// A relationship node showing a picture: its name goes below it.
+    pub fn picture_below(&self) -> bool {
+        self.kind.is_rel_node() && self.image.is_some()
+    }
+
     pub fn topic_look(&self) -> u8 {
         self.topic_shape.unwrap_or(if self.kind == ShapeKind::CentralTopic { TOPIC_CAPSULE } else { TOPIC_ROUNDED })
     }
@@ -1037,6 +1085,7 @@ impl Shape {
             border_style: None,
             markers: Vec::new(),
             timeline: None,
+            image: None,
             splits: Vec::new(),
             act_spans: Vec::new(),
             dividers: None,
@@ -1725,13 +1774,36 @@ impl Project {
         ev(&mut b, 560.0, 400.0, 130.0, "Mobile app", MARK_PIN);
         ev(&mut b, 680.0, 120.0, 120.0, "Launch", MARK_MILESTONE);
 
+        let mut b = Builder::new(&mut p, DiagramKind::Relationship, "Case Board");
+        use crate::picture::portrait;
+        let family = b.shape_h(S::RelGroup, 0.0, 0.0, 340.0, 390.0, "Victim's family");
+        let victim = b.shape_h(S::RelCircle, 40.0, 60.0, 90.0, 90.0, "Daniel Hart\n(victim)");
+        b.picture(victim, portrait([214, 226, 240], [70, 50, 40], [60, 80, 120]));
+        let wife = b.shape_h(S::RelRounded, 40.0, 250.0, 90.0, 90.0, "Clara Hart\nwife");
+        b.picture(wife, portrait([246, 222, 222], [150, 90, 40], [170, 60, 80]));
+        let brother = b.shape_h(S::RelBox, 190.0, 160.0, 130.0, 50.0, "Owen Hart\nbrother");
+        let firm = b.shape_h(S::RelGroup, 460.0, 20.0, 240.0, 190.0, "Lane & Co.");
+        b.fill(firm, [226, 240, 226, 255]);
+        let partner = b.shape_h(S::RelRounded, 500.0, 80.0, 160.0, 50.0, "Victor Lane\nbusiness partner");
+        let secretary = b.shape_h(S::RelBox, 500.0, 150.0, 160.0, 46.0, "Mia Cole\nsecretary");
+        let stranger = b.shape_h(S::RelCircle, 480.0, 250.0, 90.0, 90.0, "Unknown\nman");
+        b.border(stranger, BORDER_DASHED, [0xE5, 0x39, 0x35, 255]);
+        let neighbour = b.shape_h(S::RelBox, 680.0, 272.0, 140.0, 46.0, "Neighbour\n(witness)");
+        let _ = (family, firm);
+        b.conn(C::RelLine, wife, victim, "married", "", "");
+        b.conn(C::RelArrow, brother, victim, "owes money", "", "");
+        b.conn(C::RelTwoWay, partner, victim, "business rivals", "", "");
+        b.conn(C::RelArrow, secretary, partner, "works for", "", "");
+        b.conn(C::RelDashedArrow, neighbour, stranger, "saw him at night", "", "");
+        b.conn(C::RelDashed, stranger, wife, "affair?", "", "");
+
         // folders: the diagrams grouped the way a team might organise them
         let req = p.add_folder("0-Requirements", None);
         let arch = p.add_folder("1-Architecture", None);
         let design = p.add_folder("2-Design", None);
         let behavior = p.add_folder("2.1-Behavior", Some(design));
         let db = p.add_folder("3-Database", None);
-        let plan = [design, arch, arch, req, behavior, behavior, behavior, design, arch, db, arch, req, req];
+        let plan = [design, arch, arch, req, behavior, behavior, behavior, design, arch, db, arch, req, req, req];
         for (d, f) in p.diagrams.iter_mut().zip(plan) {
             d.folder = Some(f);
         }
@@ -1776,6 +1848,25 @@ impl<'a> Builder<'a> {
     fn timeline(&mut self, id: u64, t: Timeline) {
         if let Some(s) = self.p.diagram_mut(self.did).unwrap().shape_mut(id) {
             s.timeline = Some(t);
+        }
+    }
+
+    fn picture(&mut self, id: u64, data: String) {
+        if let Some(s) = self.p.diagram_mut(self.did).unwrap().shape_mut(id) {
+            s.image = Some(data);
+        }
+    }
+
+    fn fill(&mut self, id: u64, c: [u8; 4]) {
+        if let Some(s) = self.p.diagram_mut(self.did).unwrap().shape_mut(id) {
+            s.fill = Some(c);
+        }
+    }
+
+    fn border(&mut self, id: u64, style: u8, c: [u8; 4]) {
+        if let Some(s) = self.p.diagram_mut(self.did).unwrap().shape_mut(id) {
+            s.border_style = Some(style);
+            s.border_color = Some(c);
         }
     }
 
@@ -1850,7 +1941,7 @@ impl<'a> Builder<'a> {
 /// away from the middle of the box, the line runs straight across at that height (or
 /// position): both ends are fixed there. Starting near the middle leaves the ends free.
 pub fn press_lane(a: &Shape, b: &Shape, press: (f32, f32)) -> Option<((f32, f32), (f32, f32))> {
-    let boxy = |s: &Shape| s.kind.is_network_device() || !(s.kind.is_pseudo() || matches!(s.kind, ShapeKind::UseCase | ShapeKind::Collaboration | ShapeKind::Choice | ShapeKind::Decision | ShapeKind::Merge));
+    let boxy = |s: &Shape| s.kind.is_network_device() || !(s.kind.is_pseudo() || matches!(s.kind, ShapeKind::UseCase | ShapeKind::Collaboration | ShapeKind::RelCircle | ShapeKind::Choice | ShapeKind::Decision | ShapeKind::Merge));
     if !boxy(a) || !boxy(b) {
         return None;
     }
